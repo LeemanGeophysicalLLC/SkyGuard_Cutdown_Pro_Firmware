@@ -20,6 +20,28 @@ static bool s_remote_cut_latched = false;
 static uint32_t s_last_tx_ms = 0;
 static uint8_t  s_fail_count = 0;
 
+static volatile bool s_iridium_busy = false;
+
+bool iridiumIsBusy() { return s_iridium_busy; }
+
+// Weak hook: application may override to run time-critical work during long Iridium sessions.
+// Keep this FAST (no SD writes, no long I/O).
+void iridiumServiceDuringSession() __attribute__((weak));
+void iridiumServiceDuringSession() {
+    // Default: keep 1 Hz timebase/state/termination detector alive.
+    const uint32_t now_ms = millis();
+    if (stateTick1Hz(now_ms)) {
+        stateOn1HzTick(now_ms);
+        stateUpdateTerminationDetector1Hz(now_ms);
+    }
+}
+
+// IridiumSBD calls this periodically during long operations (weak in library; override here).
+bool ISBDCallback() {
+    iridiumServiceDuringSession();
+    return true; // true = continue, false = cancel
+}
+
 static void satPowerOn() {
     pinMode(PIN_SAT_POWER, OUTPUT);
     if (SAT_POWER_ACTIVE_HIGH) digitalWrite(PIN_SAT_POWER, HIGH);
@@ -203,7 +225,10 @@ static bool doTelemetrySendAndReceive() {
     const uint8_t* tx = (const uint8_t*)msg;
     size_t txLen = strnlen(msg, sizeof(msg));
 
+    s_iridium_busy = true;
     int err = modem.sendReceiveSBDBinary(tx, txLen, rx, rxLen);
+    s_iridium_busy = false;
+
 
     // Dummy-pointer fallback if overload resolution doesn't like nullptr:
     // uint8_t dummy = 0;

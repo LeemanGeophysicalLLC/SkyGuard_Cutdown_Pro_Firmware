@@ -70,8 +70,9 @@ enum CutReason : uint8_t {
  *  - We use a deadline-based approach to reduce drift.
  */
 struct Scheduler1Hz {
-    uint32_t next_tick_ms;   ///< Next scheduled tick time (millis).
-    bool     initialized;    ///< Has next_tick_ms been initialized yet?
+    uint32_t next_tick_ms;     ///< Next scheduled tick time (millis).
+    bool     initialized;      ///< Has next_tick_ms been initialized yet?
+    uint16_t last_elapsed_s;   ///< Seconds elapsed since last emitted tick (>=1 when a tick is emitted).
 };
 
 /**

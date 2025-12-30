@@ -20,6 +20,7 @@ RuntimeState g_state;
 static void schedulerReset(Scheduler1Hz& s) {
     s.initialized = false;
     s.next_tick_ms = 0;
+    s.last_elapsed_s = 0;
 }
 
 void stateInit(SystemMode initial_mode) {
@@ -53,48 +54,43 @@ void stateInit(SystemMode initial_mode) {
 
 bool stateTick1Hz(uint32_t now_ms) {
     /**
-     * Deadline-based 1 Hz tick generation.
+     * Deadline-based 1 Hz tick generation, but with a single emitted tick per call.
      *
-     * Behavior:
-     *  - On first call, schedule next tick at now_ms + 1000.
-     *  - On subsequent calls, if now_ms reached or passed next_tick_ms:
-     *      - increment next_tick_ms by 1000 (not "now + 1000") to reduce drift.
-     *      - return true once.
-     *
-     * Note:
-     *  - If loop stalls >1s, this yields one tick per loop call until it catches up.
-     *    That is acceptable for our deterministic behavior: we prefer catching up
-     *    to losing time entirely.
+     * If the loop stalls for N seconds, we emit ONE tick and record N seconds
+     * elapsed in sched_1hz.last_elapsed_s.
      */
     Scheduler1Hz& s = g_state.sched_1hz;
 
     if (!s.initialized) {
         s.initialized = true;
         s.next_tick_ms = now_ms + 1000;
+        s.last_elapsed_s = 0;
         return false;
     }
 
-    // signed subtraction handles millis() wrap safely
-    const int32_t dt = (int32_t)(now_ms - s.next_tick_ms);
-    if (dt >= 0) {
-        // advance deadline by exactly 1 second to reduce drift
-        s.next_tick_ms += 1000;
-
-        // If the system is extremely behind (e.g., slept), avoid huge catch-up loops
-        // by snapping forward, but still emit a tick now.
-        const int32_t lag = (int32_t)(now_ms - s.next_tick_ms);
-        if (lag > 10 * 1000) { // >10 seconds behind
-            s.next_tick_ms = now_ms + 1000;
-        }
-
-        return true;
+    // Not yet time for the next tick.
+    if ((int32_t)(now_ms - s.next_tick_ms) < 0) {
+        return false;
     }
 
-    return false;
+    // At least 1 second has elapsed since the scheduled deadline.
+    const uint32_t elapsed_s_u32 =
+        1UL + (uint32_t)(now_ms - s.next_tick_ms) / 1000UL;
+
+    // Advance deadline by the elapsed amount to minimize drift.
+    s.next_tick_ms += elapsed_s_u32 * 1000UL;
+
+    // Store elapsed seconds (clamp to uint16_t).
+    s.last_elapsed_s = (elapsed_s_u32 > 0xFFFFUL) ? 0xFFFFU : (uint16_t)elapsed_s_u32;
+
+    return true;
 }
 
 void stateOn1HzTick(uint32_t now_ms) {
     (void)now_ms;
+    const uint16_t dt_s =
+    (g_state.sched_1hz.last_elapsed_s > 0) ? g_state.sched_1hz.last_elapsed_s : 1;
+
 
     /**
      * Update derived time counters in the 1 Hz domain.
@@ -102,16 +98,16 @@ void stateOn1HzTick(uint32_t now_ms) {
      * We explicitly increment t_power_s rather than deriving from millis()
      * so the rest of firmware can be strictly “tick driven”.
      */
-    g_state.t_power_s++;
+    g_state.t_power_s += dt_s;
 
     if (g_state.launch_detected) {
-        g_state.t_launch_s++;
+        g_state.t_launch_s += dt_s;
     } else {
         g_state.t_launch_s = 0;
     }
 
     if (g_state.terminated) {
-        g_state.t_terminated_s++;
+        g_state.t_terminated_s += dt_s;
     } else {
         g_state.t_terminated_s = 0;
     }
