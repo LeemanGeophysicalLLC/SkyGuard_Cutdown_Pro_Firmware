@@ -12,6 +12,8 @@
 #include "readings.h"
 #include "state.h"
 #include "sd_log.h"
+#include "readings.h"
+#include "cut_logic.h"  
 
 
 static HardwareSerial& SAT = Serial1;
@@ -30,15 +32,26 @@ bool iridiumIsBusy() { return s_iridium_busy; }
 // Keep this FAST (no SD writes, no long I/O).
 void iridiumServiceDuringSession() __attribute__((weak));
 void iridiumServiceDuringSession() {
-    readingsDrainGPS();
-    // Default: keep 1 Hz timebase/state/termination detector alive.
     const uint32_t now_ms = millis();
-    if (stateTick1Hz(now_ms)) {
-        stateOn1HzTick(now_ms);
-        stateUpdateTerminationDetector1Hz(now_ms);
-        sdLogUpdate1Hz(now_ms);
-    }
+
+    // Always keep UART drained (cheap, prevents overflow)
+    readingsDrainGPS();
+
+    if (!stateTick1Hz(now_ms)) return;
+
+    stateOn1HzTick(now_ms);
+
+    // Update all readings (I2C + GPS derived fields)
+    readingsUpdate1Hz(now_ms);
+
+    stateUpdateTerminationDetector1Hz(now_ms);
+
+    // Keep 1 Hz logging cadence (queues during Iridium busy)
+    sdLogUpdate1Hz(now_ms);
+
+    // If you want: evaluate cut decision here too (see note below)
 }
+
 
 // IridiumSBD calls this periodically during long operations (weak in library; override here).
 bool ISBDCallback() {
