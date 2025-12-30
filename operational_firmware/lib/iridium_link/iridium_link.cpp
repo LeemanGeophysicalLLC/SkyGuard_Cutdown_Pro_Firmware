@@ -18,7 +18,6 @@ static IridiumSBD modem(SAT);
 static bool s_remote_cut_latched = false;
 
 static uint32_t s_last_tx_ms = 0;
-static uint32_t s_last_mb_ms = 0;
 static uint8_t  s_fail_count = 0;
 
 static void satPowerOn() {
@@ -83,7 +82,7 @@ static bool parseCutCommand(const char* msg) {
         any = true;
         serial = serial * 10u + (uint32_t)(*p - '0');
         p++;
-        if (serial > 9999999u) return false; // matches your serial constraint
+        if (serial > 9999999u) return false;
     }
     if (!any) return false;
     if (*p != ',') return false;
@@ -109,50 +108,13 @@ static bool parseCutCommand(const char* msg) {
     if (!g_settings.iridium.cutdown_on_command) return false;
 
     // Compare token
-    if (strncmp(token_rx, g_settings.iridium.cutdown_token, sizeof(g_settings.iridium.cutdown_token)) != 0) {
+    if (strncmp(token_rx, g_settings.iridium.cutdown_token,
+                sizeof(g_settings.iridium.cutdown_token)) != 0) {
         return false;
     }
 
     return true;
 }
-
-static bool doMailboxCheck() {
-    // Stop checks after cut OR termination (cost control)
-    if (g_state.cut_fired || g_state.terminated) return true;
-
-    uint8_t rx[270];
-    size_t rxLen = sizeof(rx);
-
-    // Some IridiumSBD versions don't provide receive-only; do a combined transaction
-    // with a zero-length MO payload to poll the mailbox.
-    int err = modem.sendReceiveSBDBinary(nullptr, 0, rx, rxLen);
-
-    // If your toolchain/library doesn't like nullptr overload resolution, use this instead:
-    // uint8_t dummy = 0;
-    // int err = modem.sendReceiveSBDBinary(&dummy, 0, rx, rxLen);
-
-    if (err == ISBD_SUCCESS) {
-        if (rxLen > 0) {
-            // Treat as ASCII command for v1
-            char msg[271];
-            size_t n = (rxLen > 270) ? 270 : rxLen;
-            memcpy(msg, rx, n);
-            msg[n] = '\0';
-
-            if (parseCutCommand(msg)) {
-                s_remote_cut_latched = true;
-                debugPrintln("[INFO] Iridium remote cut command accepted");
-            } else {
-                debugPrintln("[INFO] Iridium message received (ignored)");
-            }
-        }
-        return true;
-    }
-
-    // Failure
-    return false;
-}
-
 
 static void appendFloat(char* dst, size_t dstlen, const char* fmt, float v) {
     // Helper: write a float only if finite; else write "NA"
@@ -170,14 +132,36 @@ static void appendFloat(char* dst, size_t dstlen, const char* fmt, float v) {
     }
 }
 
-static bool doTelemetrySend() {
+static void handleRxMessage(const uint8_t* rx, size_t rxLen) {
+    if (!rx || rxLen == 0) return;
+
+    // Treat as ASCII command for v1
+    char msg[271];
+    size_t n = (rxLen > 270) ? 270 : rxLen;
+    memcpy(msg, rx, n);
+    msg[n] = '\0';
+
+    // Cost control + safety: ignore remote cut once cut or terminated
+    if (g_state.cut_fired || g_state.terminated) {
+        debugPrintln("[INFO] Iridium MT received after cut/termination (ignored)");
+        return;
+    }
+
+    if (parseCutCommand(msg)) {
+        s_remote_cut_latched = true;
+        debugPrintln("[INFO] Iridium remote cut command accepted");
+    } else {
+        debugPrintln("[INFO] Iridium message received (ignored)");
+    }
+}
+
+static bool doTelemetrySendAndReceive() {
     // If user disables TX in this phase by setting interval 0, caller won’t call us.
     // Build a compact CSV-ish payload:
     // T,<serial>,<t_power_s>,<flight>,<lat>,<lon>,<alt>,<temp>,<p>,<rh>,<cut>,<reason>
     char msg[160];
     msg[0] = '\0';
 
-    // flight_state numeric is fine
     const uint32_t serial = g_settings.device.serial_number;
 
     snprintf(msg, sizeof(msg), "T,%lu,%lu,%u",
@@ -210,14 +194,35 @@ static bool doTelemetrySend() {
         strncat(msg, tmp, sizeof(msg) - strlen(msg) - 1);
     }
 
-    const int err = modem.sendSBDText(msg);
-    return (err == ISBD_SUCCESS);
+    // Use send+receive every time to avoid extra mailbox sessions.
+    // Rx buffer sized to max SBD MT payload (270 bytes).
+    uint8_t rx[270];
+    size_t rxLen = sizeof(rx);
+
+    // Prefer nullptr for zero-length MO; if your toolchain complains, use the dummy variant below.
+    const uint8_t* tx = (const uint8_t*)msg;
+    size_t txLen = strnlen(msg, sizeof(msg));
+
+    int err = modem.sendReceiveSBDBinary(tx, txLen, rx, rxLen);
+
+    // Dummy-pointer fallback if overload resolution doesn't like nullptr:
+    // uint8_t dummy = 0;
+    // int err = modem.sendReceiveSBDBinary((uint8_t*)tx, txLen, rx, rxLen);
+
+    if (err != ISBD_SUCCESS) {
+        return false;
+    }
+
+    if (rxLen > 0) {
+        handleRxMessage(rx, rxLen);
+    }
+
+    return true;
 }
 
 void iridiumInit() {
     s_remote_cut_latched = false;
     s_last_tx_ms = 0;
-    s_last_mb_ms = 0;
     s_fail_count = 0;
 
     // If disabled, keep modem off and clear error
@@ -256,8 +261,6 @@ bool iridiumGetRemoteCutRequestAndClear() {
 void iridiumUpdate1Hz(uint32_t now_ms) {
     // Disabled: nothing to do.
     if (!g_settings.iridium.enabled) {
-        // Optional: keep modem powered off to save power
-        // satPowerOff();
         errorClear(ERR_IRIDIUM);
         return;
     }
@@ -269,38 +272,14 @@ void iridiumUpdate1Hz(uint32_t now_ms) {
         if (s_last_tx_ms == 0 || (uint32_t)(now_ms - s_last_tx_ms) >= tx_interval_ms) {
             s_last_tx_ms = now_ms;
 
-            const bool ok = doTelemetrySend();
+            const bool ok = doTelemetrySendAndReceive();
             if (ok) {
                 s_fail_count = 0;
                 errorClear(ERR_IRIDIUM);
             } else {
                 if (s_fail_count < 255) s_fail_count++;
                 if (s_fail_count >= IRIDIUM_FAILS_BEFORE_ERROR) errorSet(ERR_IRIDIUM);
-                debugPrintln("[WARN] Iridium telemetry send failed");
-            }
-        }
-    }
-
-    // ---- Mailbox check scheduling (cost control) ----
-    // Only check mailbox until cut OR termination begins.
-    if (g_state.cut_fired || g_state.terminated) {
-        return;
-    }
-
-    const uint32_t mb_interval_s = g_settings.iridium.mailbox_check_interval_s;
-    if (mb_interval_s > 0) {
-        const uint32_t mb_interval_ms = mb_interval_s * 1000UL;
-        if (s_last_mb_ms == 0 || (uint32_t)(now_ms - s_last_mb_ms) >= mb_interval_ms) {
-            s_last_mb_ms = now_ms;
-
-            const bool ok = doMailboxCheck();
-            if (ok) {
-                s_fail_count = 0;
-                errorClear(ERR_IRIDIUM);
-            } else {
-                if (s_fail_count < 255) s_fail_count++;
-                if (s_fail_count >= IRIDIUM_FAILS_BEFORE_ERROR) errorSet(ERR_IRIDIUM);
-                debugPrintln("[WARN] Iridium mailbox check failed");
+                debugPrintln("[WARN] Iridium telemetry send/receive failed");
             }
         }
     }
