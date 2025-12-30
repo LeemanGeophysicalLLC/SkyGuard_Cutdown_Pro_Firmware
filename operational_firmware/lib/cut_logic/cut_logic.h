@@ -105,3 +105,5 @@ CutDecision cutLogicEvaluate1Hz(const CutLogicInputs& in);
  * @param out Inputs struct to initialize.
  */
 void cutLogicInitInputs(CutLogicInputs& out);
+
+void cutLogicUpdate1Hz(uint32_t now_ms);

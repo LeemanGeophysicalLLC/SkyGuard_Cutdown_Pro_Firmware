@@ -46,11 +46,13 @@ void iridiumServiceDuringSession() {
 
     stateUpdateTerminationDetector1Hz(now_ms);
 
+    // NEW: evaluate/actuate cut during Iridium sessions too
+    cutLogicUpdate1Hz(now_ms);
+
     // Keep 1 Hz logging cadence (queues during Iridium busy)
     sdLogUpdate1Hz(now_ms);
-
-    // If you want: evaluate cut decision here too (see note below)
 }
+
 
 
 // IridiumSBD calls this periodically during long operations (weak in library; override here).

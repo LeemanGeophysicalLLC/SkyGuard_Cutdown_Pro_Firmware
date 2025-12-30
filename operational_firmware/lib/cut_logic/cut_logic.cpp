@@ -5,7 +5,10 @@
  */
 
 #include "cut_logic.h"
-
+#include "readings.h"
+#include "state.h"
+#include "servo_release.h"
+#include "iridium_link.h"
 #include <string.h>
 #include <math.h>
 
@@ -209,6 +212,25 @@ void cutLogicInit() {
 
 void cutLogicResetAccumulators() {
     resetAccumulators();
+}
+
+void cutLogicUpdate1Hz(uint32_t now_ms) {
+    // Don’t double-fire.
+    if (g_state.cut_fired) return;
+
+    CutLogicInputs in;
+    readingsFillCutLogicInputs(in);
+
+    // Optional: consume remote-cut request if your design uses one
+    // (only if you have this API)
+    in.iridium_remote_cut_request = iridiumGetRemoteCutRequestAndClear();
+
+    const CutDecision d = cutLogicEvaluate1Hz(in);
+
+    if (d.should_cut) {
+        stateSetCutFired(d.reason, now_ms);
+        servoReleaseRelease();
+    }
 }
 
 void cutLogicInitInputs(CutLogicInputs& out) {
