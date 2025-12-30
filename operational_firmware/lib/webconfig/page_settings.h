@@ -442,44 +442,9 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
           CONFIG access point is <strong>CONFIG-&lt;serial&gt;</strong> and uses the password below.
           Serial number is preserved across factory resets (hold button at boot).
         </p>
-        <div class="section-grid">
-          <div class="field">
-            <label for="serial_number">Serial number <span class="muted">(0 = unassigned, max 7 digits)</span></label>
-            <input type="number" id="serial_number" name="serial_number" min="0" max="9999999" step="1" value="0">
-          </div>
-          <div class="field">
+        <div class="section-grid"><div class="field">
             <label for="ap_password">CONFIG AP password <span class="muted">(min 8 chars)</span></label>
             <input type="password" id="ap_password" name="ap_password" value="l33mange0">
-          </div>
-        </div>
-      </section>
-
-      <!-- FIELDWATCH -->
-      <section class="section">
-        <h2>
-          FieldWatch
-          <span class="tag">Telemetry routing</span>
-        </h2>
-        <p class="help">
-          FieldWatch routing identifiers used by telemetry packets.
-        </p>
-        <div class="section-grid">
-          <div>
-            <!-- Hidden 0 ensures a value is always posted -->
-            <input type="hidden" name="fw_enabled" value="0">
-            <label class="toggle">
-              <input type="checkbox" name="fw_enabled" value="1">
-              <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              <span class="toggle-label">Enable FieldWatch routing</span>
-            </label>
-          </div>
-          <div class="field">
-            <label for="fw_device_id">Device ID</label>
-            <input type="text" id="fw_device_id" name="fw_device_id" value="">
-          </div>
-          <div class="field">
-            <label for="fw_access_token">Access token</label>
-            <input type="text" id="fw_access_token" name="fw_access_token" value="">
           </div>
         </div>
       </section>
@@ -505,14 +470,6 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             </label>
             <div class="toggle-subtext">No cut until the instrument has detected ascent.</div>
           </div>
-          <div>
-            <input type="hidden" name="gc_require_fix" value="0">
-            <label class="toggle">
-              <input type="checkbox" name="gc_require_fix" value="1">
-              <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              <span class="toggle-label">Require GPS fix before cut</span>
-            </label>
-            <div class="toggle-subtext">All cut logic is blocked until GPS fix quality ≥ 1.</div>
           </div>
         </div>
       </section>
@@ -1186,10 +1143,10 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             </label>
 
             <div class="field">
-              <label for="ext0_active_high">Active level</label>
+              <label for="ext0_active_high">Signal level</label>
               <select id="ext0_active_high" name="ext0_active_high">
-                <option value="1">Active high</option>
-                <option value="0">Active low</option>
+                <option value="1">Cut when high</option>
+                <option value="0">Cut when low</option>
               </select>
             </div>
 
@@ -1208,10 +1165,10 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             </label>
 
             <div class="field">
-              <label for="ext1_active_high">Active level</label>
+              <label for="ext1_active_high">Signal level</label>
               <select id="ext1_active_high" name="ext1_active_high">
-                <option value="1">Active high</option>
-                <option value="0">Active low</option>
+                <option value="1">Cut when high</option>
+                <option value="0">Cut when low</option>
               </select>
             </div>
 
@@ -1223,11 +1180,70 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         </div>
       </section>
 
+
+      <!-- TERMINATION DETECTION -->
+      <section class="section">
+        <h2>
+          Termination Detection
+          <span class="tag">Detect descent without cut</span>
+        </h2>
+        <p class="help">
+          If enabled, the instrument declares <strong>terminated</strong> when it detects sustained descent after launch
+          (useful when the balloon pops without a commanded cut). This affects phase-dependent behavior (like Iridium cadence).
+        </p>
+
+        <div class="section-grid">
+          <div>
+            <input type="hidden" name="term_enabled" value="0">
+            <label class="toggle">
+              <input type="checkbox" name="term_enabled" value="1" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Enable termination detection</span>
+            </label>
+
+            <div class="field" style="margin-top:6px;">
+              <label for="term_sustain_s">Sustain time <span class="muted">(s, consecutive seconds)</span></label>
+              <input type="number" id="term_sustain_s" name="term_sustain_s" min="1" step="1" value="15">
+            </div>
+          </div>
+
+          <div>
+            <input type="hidden" name="term_use_gps" value="0">
+            <label class="toggle">
+              <input type="checkbox" name="term_use_gps" value="1" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Use GPS peak-drop detector</span>
+            </label>
+            <div class="toggle-subtext">Triggers if GPS altitude drops below the in-flight peak.</div>
+
+            <div class="field" style="margin-top:6px;">
+              <label for="term_gps_drop_m">GPS drop threshold <span class="muted">(m below peak)</span></label>
+              <input type="number" id="term_gps_drop_m" name="term_gps_drop_m" min="0" step="0.1" value="60.0">
+            </div>
+          </div>
+
+          <div>
+            <input type="hidden" name="term_use_pressure" value="0">
+            <label class="toggle">
+              <input type="checkbox" name="term_use_pressure" value="1" checked>
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-label">Use pressure min-rise detector</span>
+            </label>
+            <div class="toggle-subtext">Triggers if pressure rises above the in-flight minimum.</div>
+
+            <div class="field" style="margin-top:6px;">
+              <label for="term_pressure_rise_hpa">Pressure rise threshold <span class="muted">(hPa above min)</span></label>
+              <input type="number" id="term_pressure_rise_hpa" name="term_pressure_rise_hpa" min="0" step="0.1" value="50.0">
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- IRIDIUM -->
       <section class="section">
         <h2>Iridium Telemetry &amp; Remote Cut</h2>
         <p class="help">
-          Configure progressive telemetry rates and optional remote cut commands via Iridium messages.
+          Configure progressive telemetry rates and optional remote cut commands via Iridium messages. Mailbox reception is performed during transmit sessions (no separate polling interval).
         </p>
 
         <div class="section-grid">
@@ -1253,7 +1269,12 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
             </div>
           </div>
 
-          <div>
+          <div>            <div class="field">
+              <label for="ir_ground_s">Ground interval <span class="muted">(s between packets pre-launch, 0 = disabled)</span></label>
+              <input type="number" id="ir_ground_s" name="ir_ground_s" min="0" step="1" value="0">
+            </div>
+
+
             <div class="field">
               <label for="ir_ascent_s">Ascent interval <span class="muted">(s between packets before cut)</span></label>
               <input type="number" id="ir_ascent_s" name="ir_ascent_s" min="0" step="1" value="600">

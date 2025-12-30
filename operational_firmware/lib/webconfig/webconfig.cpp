@@ -313,7 +313,7 @@ static String jsEscapeSingleQuoted(const char* s) {
     for (const char* p = s; *p; ++p) {
         const char ch = *p;
         switch (ch) {
-            case '\\\\': out += F("\\\\\\\\"); break;
+            case '\\': out += F("\\\\\\\\"); break;
             case '\'':   out += F("\\\\'");    break;
             case '\n':   out += F("\\\\n");    break;
             case '\r':   out += F("\\\\r");    break;
@@ -408,31 +408,35 @@ static String buildPrefillScript(const SystemConfig& cfg) {
     js += F("');\n");
 
     // Device/WiFi
-    js += F("setValById('serial_number','");
-    js += String((unsigned long)cfg.device.serial_number);
-    js += F("');\n");
-    js += F("setPassword('ap_password','");
-    js += jsEscapeSingleQuoted(cfg.device.ap_password);
-    js += F("');\n");
+    // Device/WiFi
+js += F("setPassword('ap_password','");
+js += jsEscapeSingleQuoted(cfg.device.ap_password);
+js += F("');\n");
 
-    // FieldWatch
-    js += F("setCheck('fw_enabled',");
-    js += (cfg.fieldwatch.enabled ? "1" : "0");
-    js += F(");\n");
-    js += F("setText('fw_device_id','");
-    js += jsEscapeSingleQuoted(cfg.fieldwatch.device_id);
-    js += F("');\n");
-    js += F("setText('fw_access_token','");
-    js += jsEscapeSingleQuoted(cfg.fieldwatch.access_token);
-    js += F("');\n");
+// Global cut toggles (UI only exposes require_launch; require_fix is forced false)
+js += F("setCheck('gc_require_launch',");
+js += (cfg.global_cutdown.require_launch_before_cut ? "1" : "0");
+js += F(");\n");
 
-    // Global cut toggles
-    js += F("setCheck('gc_require_launch',");
-    js += (cfg.global_cutdown.require_launch_before_cut ? "1" : "0");
-    js += F(");\n");
-    js += F("setCheck('gc_require_fix',");
-    js += (cfg.global_cutdown.require_gps_fix_before_cut ? "1" : "0");
-    js += F(");\n");
+// Termination detector (balloon-pop / descent detector)
+js += F("setCheck('term_enabled',");
+js += (cfg.term.enabled ? "1" : "0");
+js += F(");\n");
+js += F("setNumber('term_sustain_s','");
+js += String((unsigned)cfg.term.sustain_s);
+js += F("');\n");
+js += F("setCheck('term_use_gps',");
+js += (cfg.term.use_gps ? "1" : "0");
+js += F(");\n");
+js += F("setNumber('term_gps_drop_m','");
+js += String(cfg.term.gps_drop_m, 2);
+js += F("');\n");
+js += F("setCheck('term_use_pressure',");
+js += (cfg.term.use_pressure ? "1" : "0");
+js += F(");\n");
+js += F("setNumber('term_pressure_rise_hpa','");
+js += String(cfg.term.pressure_rise_hpa, 1);
+js += F("');\n");
 
     // External inputs
     for (uint8_t i = 0; i < NUM_EXTERNAL_INPUTS; i++) {
@@ -465,15 +469,23 @@ static String buildPrefillScript(const SystemConfig& cfg) {
     js += F("setText('ir_token','");
     js += jsEscapeSingleQuoted(cfg.iridium.cutdown_token);
     js += F("');\n");
+
+    js += F("setNumber('ir_ground_s','");
+    js += String((unsigned long)cfg.iridium.ground_interval_s);
+    js += F("');\n");
+
     js += F("setNumber('ir_ascent_s','");
     js += String((unsigned long)cfg.iridium.ascent_interval_s);
     js += F("');\n");
+
     js += F("setNumber('ir_descent_s','");
     js += String((unsigned long)cfg.iridium.descent_interval_s);
     js += F("');\n");
+
     js += F("setNumber('ir_descent_dur_s','");
     js += String((unsigned long)cfg.iridium.descent_duration_s);
     js += F("');\n");
+
     js += F("setNumber('ir_beacon_s','");
     js += String((unsigned long)cfg.iridium.beacon_interval_s);
     js += F("');\n");
@@ -625,8 +637,8 @@ void webconfigValidateCandidate(const SystemConfig& candidate, WebConfigValidati
     // Iridium: intervals sanity when enabled.
     if (candidate.iridium.enabled) {
         if (candidate.iridium.ascent_interval_s < 10) addError("Iridium ascent interval must be >= 10 s");
-        if (candidate.iridium.descent_interval_s < 10) addError("Iridium descent interval must be >= 10 s");
-        if (candidate.iridium.beacon_interval_s < 10) addError("Iridium beacon interval must be >= 10 s");
+        if (candidate.iridium.descent_interval_s != 0 && candidate.iridium.descent_interval_s < 10) addError("Iridium descent interval must be >= 10 s");
+        if (candidate.iridium.beacon_interval_s != 0 && candidate.iridium.beacon_interval_s < 10) addError("Iridium beacon interval must be >= 10 s");
         if (candidate.iridium.descent_duration_s != 0 && candidate.iridium.descent_duration_s < 10) {
             addError("Iridium descent duration must be 0 or >= 10 s");
         }
@@ -736,37 +748,38 @@ static void parseConditionRow(char prefix, uint8_t idx, Condition& c) {
 static void applyFormToCandidate(SystemConfig& candidate) {
     if (!g_server) return;
 
-    // Device serial + AP password
-    if (g_server->hasArg("serial_number")) {
-        candidate.device.serial_number = toU32(g_server->arg("serial_number"), candidate.device.serial_number);
-    }
+    // Device/AP password (serial number is factory-set and not editable)
     if (g_server->hasArg("ap_password")) {
         copyArgToBuf(candidate.device.ap_password, sizeof(candidate.device.ap_password), g_server->arg("ap_password"));
     }
 
-    // Global cut toggles
+    // Global cut toggles (UI only exposes require_launch; require_fix is forced false)
     if (g_server->hasArg("gc_require_launch")) {
         candidate.global_cutdown.require_launch_before_cut =
             toBool(g_server->arg("gc_require_launch"), candidate.global_cutdown.require_launch_before_cut);
     }
-    if (g_server->hasArg("gc_require_fix")) {
-        candidate.global_cutdown.require_gps_fix_before_cut =
-            toBool(g_server->arg("gc_require_fix"), candidate.global_cutdown.require_gps_fix_before_cut);
+
+    // Termination detector (term_*)
+    if (g_server->hasArg("term_enabled")) {
+        candidate.term.enabled = toBool(g_server->arg("term_enabled"), candidate.term.enabled);
+    }
+    if (g_server->hasArg("term_sustain_s")) {
+        candidate.term.sustain_s = toU16(g_server->arg("term_sustain_s"), candidate.term.sustain_s);
+    }
+    if (g_server->hasArg("term_use_gps")) {
+        candidate.term.use_gps = toBool(g_server->arg("term_use_gps"), candidate.term.use_gps);
+    }
+    if (g_server->hasArg("term_gps_drop_m")) {
+        candidate.term.gps_drop_m = toF32(g_server->arg("term_gps_drop_m"), candidate.term.gps_drop_m);
+    }
+    if (g_server->hasArg("term_use_pressure")) {
+        candidate.term.use_pressure = toBool(g_server->arg("term_use_pressure"), candidate.term.use_pressure);
+    }
+    if (g_server->hasArg("term_pressure_rise_hpa")) {
+        candidate.term.pressure_rise_hpa = toF32(g_server->arg("term_pressure_rise_hpa"), candidate.term.pressure_rise_hpa);
     }
 
-    // FieldWatch
-    if (g_server->hasArg("fw_enabled")) {
-        candidate.fieldwatch.enabled = toBool(g_server->arg("fw_enabled"), candidate.fieldwatch.enabled);
-    }
-    if (g_server->hasArg("fw_device_id")) {
-        copyArgToBuf(candidate.fieldwatch.device_id, sizeof(candidate.fieldwatch.device_id), g_server->arg("fw_device_id"));
-    }
-    if (g_server->hasArg("fw_access_token")) {
-        copyArgToBuf(candidate.fieldwatch.access_token, sizeof(candidate.fieldwatch.access_token), g_server->arg("fw_access_token"));
-    }
-
-    // External inputs
-    // ext0_enabled/ext0_active_high/ext0_debounce_ms, ext1_...
+    // External inputs: ext0_enabled/ext0_active_high/ext0_debounce_ms, ext1_...
     for (uint8_t i = 0; i < NUM_EXTERNAL_INPUTS; i++) {
         char k[24];
 
@@ -790,6 +803,9 @@ static void applyFormToCandidate(SystemConfig& candidate) {
     if (g_server->hasArg("ir_token")) {
         copyArgToBuf(candidate.iridium.cutdown_token, sizeof(candidate.iridium.cutdown_token), g_server->arg("ir_token"));
     }
+    if (g_server->hasArg("ir_ground_s")) {
+        candidate.iridium.ground_interval_s = toU32(g_server->arg("ir_ground_s"), candidate.iridium.ground_interval_s);
+    }
     if (g_server->hasArg("ir_ascent_s")) {
         candidate.iridium.ascent_interval_s = toU32(g_server->arg("ir_ascent_s"), candidate.iridium.ascent_interval_s);
     }
@@ -808,6 +824,9 @@ static void applyFormToCandidate(SystemConfig& candidate) {
         parseConditionRow('a', i, candidate.bucketA[i]);
         parseConditionRow('b', i, candidate.bucketB[i]);
     }
+
+    // UI does not expose this; keep it forced false for v1.
+    candidate.global_cutdown.require_gps_fix_before_cut = false;
 
     // Hygiene: ensure strings terminated
     ensureNullTerminated(candidate.device.ap_password, sizeof(candidate.device.ap_password));
@@ -881,6 +900,65 @@ static void handleLock() {
 static void handleRelease() {
     if (!g_server) return;
     sendSettingsPage("Release command received (release mechanism not wired yet).", false);
+}
+
+/**
+ * @brief Factory-only route: set device serial number
+ * Format: /factory/setSerial?sn=12345678
+ * NOTE: You said no token is needed.
+ */
+static void handleFactorySetSerial() {
+    if (!g_server) return;
+
+    // 1) Validate parameter
+    if (!g_server->hasArg("sn")) {
+        g_server->send(400, "text/plain", "Missing sn");
+        return;
+    }
+
+    // 2) Parse serial number (decimal)
+    const String snStr = g_server->arg("sn");
+    char* endp = nullptr;
+    uint32_t newSn = (uint32_t)strtoul(snStr.c_str(), &endp, 10);
+
+    // Validate parse
+    if (endp == snStr.c_str() || *endp != '\0') {
+        g_server->send(400, "text/plain", "Invalid sn (must be decimal integer)");
+        return;
+    }
+
+    // Optional (recommended): disallow SN=0
+    if (newSn == 0) {
+        g_server->send(400, "text/plain", "Invalid sn (cannot be 0)");
+        return;
+    }
+
+    // Optional (recommended): write-once guard
+    // If you want SN to be settable only once, uncomment this.
+    /*
+    if (g_settings.device.serial_number != 0) {
+        g_server->send(403, "text/plain", "Serial already set");
+        return;
+    }
+    */
+
+    // 3) Save
+    g_settings.device.serial_number = newSn;
+    if (!settingsSave()) {
+        g_server->send(500, "text/plain", "Failed to save serial number");
+        return;
+    }
+
+    // 4) Confirm + reboot using existing config-mode flow
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "Serial set to %lu. Rebooting...",
+             (unsigned long)newSn);
+
+    g_server->send(200, "text/plain", msg);
+
+    // This will cause the config-mode loop to exit and restart cleanly
+    g_saved_ok = true;
 }
 
 // -------------------------
@@ -1045,6 +1123,10 @@ void webconfigEnter() {
         handleSave();
     });
 
+    server.on("/factory/setSerial", HTTP_GET, [&]() {
+    handleFactorySetSerial();
+    });
+
     server.on("/exit", HTTP_POST, [&]() {
         handleExit();
     });
@@ -1116,3 +1198,4 @@ void webconfigEnter() {
         }
     }
 }
+
