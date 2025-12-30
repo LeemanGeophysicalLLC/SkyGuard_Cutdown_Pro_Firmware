@@ -413,11 +413,23 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
           <span class="tag">Read-only flight &amp; system state</span>
         </h2>
         <p class="help">
-          Current values from the instrument. On the real device these fields update in real time;
-          this mockup is for layout review only.
+          Current values from the instrument. These fields update in real time while you are in config mode.
         </p>
         <div class="live-grid">
-          <div class="live-item"><div class="live-label">Flight state</div><div class="live-value">GROUND / IN_FLIGHT / TERMINATED</div></div>
+          <div class="live-item"><div class="live-label">Flight mode</div><div class="live-value" id="lv_mode">--</div></div>
+          <div class="live-item"><div class="live-label">Time since power on (s)</div><div class="live-value" id="lv_t_power">--</div></div>
+          <div class="live-item"><div class="live-label">Time since launch (s)</div><div class="live-value" id="lv_t_launch">--</div></div>
+          <div class="live-item"><div class="live-label">GPS fix</div><div class="live-value" id="lv_gps_fix">--</div></div>
+          <div class="live-item"><div class="live-label">Latitude (deg)</div><div class="live-value" id="lv_lat">--</div></div>
+          <div class="live-item"><div class="live-label">Longitude (deg)</div><div class="live-value" id="lv_lon">--</div></div>
+          <div class="live-item"><div class="live-label">GPS altitude (m)</div><div class="live-value" id="lv_alt">--</div></div>
+          <div class="live-item"><div class="live-label">Pressure (hPa)</div><div class="live-value" id="lv_p">--</div></div>
+          <div class="live-item"><div class="live-label">Temperature (°C)</div><div class="live-value" id="lv_t">--</div></div>
+          <div class="live-item"><div class="live-label">Humidity (%)</div><div class="live-value" id="lv_h">--</div></div>
+          <div class="live-item"><div class="live-label">Next Iridium transmit in (s)</div><div class="live-value" id="lv_ir_next">--</div></div>
+          <div class="live-item"><div class="live-label">Last cut reason</div><div class="live-value" id="lv_cut_reason">--</div></div>
+        </div>
+<div class="live-value">GROUND / IN_FLIGHT / TERMINATED</div></div>
           <div class="live-item"><div class="live-label">Time since power on (s)</div><div class="live-value">1234</div></div>
           <div class="live-item"><div class="live-label">Time since launch (s)</div><div class="live-value">0 (not launched)</div></div>
           <div class="live-item"><div class="live-label">GPS fix quality</div><div class="live-value">0 (no fix) / 1+ (fix)</div></div>
@@ -1323,6 +1335,47 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
     </main>
   </form>
 </div>
+
+<script>
+(function(){
+  function $(id){ return document.getElementById(id); }
+  function setText(id, v){
+    var el = $(id);
+    if (!el) return;
+    el.textContent = (v === null || v === undefined) ? "--" : String(v);
+  }
+
+  async function tick(){
+    try{
+      const r = await fetch('/status.json', { cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+
+      setText('lv_mode', j.mode || '--');
+      setText('lv_t_power', j.t_power_s);
+      setText('lv_t_launch', j.t_launch_s);
+
+      setText('lv_gps_fix', j.gps_fix ? 'FIX' : 'NO FIX');
+      setText('lv_lat', (j.gps_lat === null) ? '--' : j.gps_lat);
+      setText('lv_lon', (j.gps_lon === null) ? '--' : j.gps_lon);
+      setText('lv_alt', (j.gps_alt === null) ? '--' : j.gps_alt);
+
+      setText('lv_p', (j.pressure_hpa === null) ? '--' : j.pressure_hpa);
+      setText('lv_t', (j.temp_c === null) ? '--' : j.temp_c);
+      setText('lv_h', (j.humidity_pct === null) ? '--' : j.humidity_pct);
+
+      setText('lv_ir_next', j.iridium_next_s);
+      setText('lv_cut_reason', j.last_cut_reason || '--');
+    }catch(e){
+      // ignore
+    }
+  }
+
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
 </body>
+
 </html>
 )rawliteral";

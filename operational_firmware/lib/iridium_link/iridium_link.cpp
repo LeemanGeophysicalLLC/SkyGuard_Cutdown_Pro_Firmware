@@ -30,6 +30,7 @@ bool iridiumIsBusy() { return s_iridium_busy; }
 // Keep this FAST (no SD writes, no long I/O).
 void iridiumServiceDuringSession() __attribute__((weak));
 void iridiumServiceDuringSession() {
+    readingsDrainGPS();
     // Default: keep 1 Hz timebase/state/termination detector alive.
     const uint32_t now_ms = millis();
     if (stateTick1Hz(now_ms)) {

@@ -38,6 +38,9 @@
 
 #include "pins.h"
 #include "settings.h"
+#include "readings.h"
+#include "state.h"
+#include "iridium_link.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -570,6 +573,84 @@ static String injectPrefill(const String& html, const SystemConfig& cfg) {
 /**
  * @brief Send the settings page HTML, with optional banner, and pre-filled current settings.
  */
+static void handleStatusJson();
+
+
+static const char* modeToString(SystemMode m) {
+    switch (m) {
+        case MODE_NORMAL: return "NORMAL";
+        case MODE_CONFIG: return "CONFIG";
+        default: return "UNKNOWN";
+    }
+}
+
+static void handleStatusJson() {
+    // Minimal JSON for live view (no ArduinoJson dependency).
+    // Values may be null when invalid.
+    char buf[768];
+
+    auto numOrNull = [](bool valid, double v, char* out, size_t out_len, const char* fmt) {
+        if (!valid) {
+            strncpy(out, "null", out_len);
+            out[out_len - 1] = '\0';
+            return;
+        }
+        snprintf(out, out_len, fmt, v);
+    };
+
+    char lat[24], lon[24], alt[24];
+    char p[24], t[24], h[24];
+
+    numOrNull(g_readings.gps_lat_valid, g_readings.gps_lat_deg, lat, sizeof(lat), "%.6f");
+    numOrNull(g_readings.gps_lon_valid, g_readings.gps_lon_deg, lon, sizeof(lon), "%.6f");
+    numOrNull(g_readings.gps_alt_valid, g_readings.gps_alt_m,   alt, sizeof(alt), "%.1f");
+
+    numOrNull(g_readings.pressure_valid,  g_readings.pressure_hpa, p, sizeof(p), "%.1f");
+    numOrNull(g_readings.temp_valid,      g_readings.temp_c,       t, sizeof(t), "%.1f");
+    numOrNull(g_readings.humidity_valid,  g_readings.humidity_pct, h, sizeof(h), "%.1f");
+
+    // Next Iridium TX countdown isn't tracked precisely in config mode; report -1.
+    const int ir_next_s = -1;
+
+    const char* cut_reason = "none";
+    // If you later store a cut reason string/enum, wire it here.
+
+    const int n = snprintf(
+        buf, sizeof(buf),
+        "{"
+          "\"mode\":\"%s\","
+          "\"t_power_s\":%lu,"
+          "\"t_launch_s\":%lu,"
+          "\"gps_fix\":%s,"
+          "\"gps_lat\":%s,"
+          "\"gps_lon\":%s,"
+          "\"gps_alt\":%s,"
+          "\"pressure_hpa\":%s,"
+          "\"temp_c\":%s,"
+          "\"humidity_pct\":%s,"
+          "\"iridium_next_s\":%d,"
+          "\"last_cut_reason\":\"%s\""
+        "}",
+        modeToString(g_state.system_mode),
+        (unsigned long)g_state.t_power_s,
+        (unsigned long)g_state.t_launch_s,
+        (g_readings.gps_fix_valid && g_readings.gps_fix) ? "true" : "false",
+        lat, lon, alt,
+        p, t, h,
+        ir_next_s,
+        cut_reason
+    );
+
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        g_server->send(500, "text/plain", "status.json overflow");
+        return;
+    }
+
+    g_server->sendHeader("Cache-Control", "no-store");
+    g_server->send(200, "application/json", buf);
+}
+
+
 static void sendSettingsPage(const char* banner_message, bool is_error) {
     if (!g_server) return;
 
@@ -1115,9 +1196,15 @@ void webconfigEnter() {
     g_defaults_requested = false;
 
     // Routes
+    // Routes
     server.on("/", HTTP_GET, [&]() {
         sendSettingsPage(nullptr, false);
     });
+
+    server.on("/status.json", HTTP_GET, [&]() {
+        handleStatusJson();
+    });
+
 
     server.on("/save", HTTP_POST, [&]() {
         handleSave();
@@ -1152,6 +1239,18 @@ void webconfigEnter() {
     const uint32_t start_ms = millis();
 
     while (true) {
+        const uint32_t now_ms = millis();
+
+        // Keep GPS UART drained so live view stays responsive.
+        readingsDrainGPS();
+
+        // Update sensor snapshot at ~1 Hz while in config mode.
+        static uint32_t next_readings_ms = 0;
+        if ((int32_t)(now_ms - next_readings_ms) >= 0) {
+            next_readings_ms = now_ms + 1000;
+            readingsUpdate1Hz(now_ms);
+        }
+
         server.handleClient();
         delay(SERVER_LOOP_DELAY_MS);
 
