@@ -10,6 +10,8 @@
 #include "readings.h"
 #include "state.h"
 #include "debug.h"
+#include "iridium_link.h"
+
 
 // Use VSPI on ESP32 (default for SPIClass(VSPI))
 static SPIClass s_sdSPI(VSPI);
@@ -18,6 +20,32 @@ static bool s_sd_present = false;
 static bool s_sd_mounted = false;
 static char s_filename[16] = {0}; // "00000001.TXT" + null
 static bool s_header_written = false;
+
+static char     s_q[SD_LOG_QUEUE_LINES][SD_LOG_LINE_MAX];
+static uint16_t s_q_head = 0;
+static uint16_t s_q_tail = 0;
+static uint16_t s_q_count = 0;
+static uint32_t s_q_dropped = 0;
+
+static void queuePushLine(const char* line) {
+    if (s_q_count >= SD_LOG_QUEUE_LINES) {
+        // Drop oldest to keep most recent (best for post-mortem).
+        s_q_tail = (uint16_t)((s_q_tail + 1) % SD_LOG_QUEUE_LINES);
+        s_q_count--;
+        s_q_dropped++;
+    }
+
+    // Copy line into slot (ensure null termination)
+    strncpy(s_q[s_q_head], line, SD_LOG_LINE_MAX - 1);
+    s_q[s_q_head][SD_LOG_LINE_MAX - 1] = '\0';
+
+    s_q_head = (uint16_t)((s_q_head + 1) % SD_LOG_QUEUE_LINES);
+    s_q_count++;
+}
+
+uint32_t sdLogQueuedCount()  { return s_q_count; }
+uint32_t sdLogDroppedCount() { return s_q_dropped; }
+
 
 static bool sdCardPresent() {
     pinMode(PIN_SD_CD, INPUT_PULLUP);
@@ -203,6 +231,12 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
         (double)temp, (double)pres, (double)rh
     );
 
+    // If Iridium is in a session, avoid SD writes (can block). Queue it instead.
+    if (iridiumIsBusy()) {
+        queuePushLine(line);
+        return;
+    }
+
     File file = SD.open(s_filename, FILE_APPEND);
     if (!file) {
         errorSet(ERR_SD_IO);
@@ -217,6 +251,41 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
         return;
     }
 
+    // After a successful direct write, flush any backlog.
+    sdLogFlushQueued();
+
+    file.close();
+    
+    errorClear(ERR_SD_IO);
+}
+
+void sdLogFlushQueued() {
+    if (s_q_count == 0) return;
+
+    if (!s_sd_mounted) {
+        // Can’t flush yet; keep queued lines.
+        return;
+    }
+
+    File file = SD.open(s_filename, FILE_APPEND);
+    if (!file) {
+        errorSet(ERR_SD_IO);
+        s_sd_mounted = false;
+        return;
+    }
+
+    while (s_q_count > 0) {
+        if (!file.println(s_q[s_q_tail])) {
+            errorSet(ERR_SD_IO);
+            file.close();
+            s_sd_mounted = false;
+            return;
+        }
+        s_q_tail = (uint16_t)((s_q_tail + 1) % SD_LOG_QUEUE_LINES);
+        s_q_count--;
+    }
+
     file.close();
     errorClear(ERR_SD_IO);
 }
+

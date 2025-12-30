@@ -148,6 +148,7 @@ static constexpr uint32_t SD_SPI_CLOCK_HZ = 4000000;   // start conservative; ca
 static constexpr bool SD_CD_ACTIVE_LOW = true;
 
 static constexpr uint16_t SD_LOG_LINE_MAX = 256;
+static constexpr uint16_t SD_LOG_QUEUE_LINES = 240;
 static constexpr const char* SD_LOG_DIR = "/";         // root
 static constexpr const char* SD_LOG_EXT = ".TXT";
 

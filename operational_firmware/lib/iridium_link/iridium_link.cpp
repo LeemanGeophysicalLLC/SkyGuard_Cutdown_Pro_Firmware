@@ -11,6 +11,8 @@
 #include "debug.h"
 #include "readings.h"
 #include "state.h"
+#include "sd_log.h"
+
 
 static HardwareSerial& SAT = Serial1;
 static IridiumSBD modem(SAT);
@@ -33,6 +35,7 @@ void iridiumServiceDuringSession() {
     if (stateTick1Hz(now_ms)) {
         stateOn1HzTick(now_ms);
         stateUpdateTerminationDetector1Hz(now_ms);
+        sdLogUpdate1Hz(now_ms);
     }
 }
 
@@ -228,6 +231,8 @@ static bool doTelemetrySendAndReceive() {
     s_iridium_busy = true;
     int err = modem.sendReceiveSBDBinary(tx, txLen, rx, rxLen);
     s_iridium_busy = false;
+    sdLogFlushQueued();
+
 
 
     // Dummy-pointer fallback if overload resolution doesn't like nullptr:
@@ -287,6 +292,12 @@ void iridiumUpdate1Hz(uint32_t now_ms) {
     // Disabled: nothing to do.
     if (!g_settings.iridium.enabled) {
         errorClear(ERR_IRIDIUM);
+        return;
+    }
+
+    // Guard: never start an Iridium session while in config mode
+    // (keeps AP/web UI responsive; avoids long blocking calls on the ground).
+    if (g_state.system_mode == MODE_CONFIG) {
         return;
     }
 
