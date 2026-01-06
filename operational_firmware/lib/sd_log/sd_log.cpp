@@ -19,6 +19,7 @@ static SPIClass s_sdSPI(VSPI);
 static bool s_sd_present = false;
 static bool s_sd_mounted = false;
 static char s_filename[16] = {0}; // "00000001.TXT" + null
+static char s_filepath[32] = {0}; // must start with "/" for ESP32 VFS
 static bool s_header_written = false;
 
 static char     s_q[SD_LOG_QUEUE_LINES][SD_LOG_LINE_MAX];
@@ -66,7 +67,7 @@ static bool mountSD() {
 }
 
 static uint32_t findNextLogIndex() {
-    // Scan root for ########.TXT and take max+1.
+    // Scan SD_LOG_DIR for ########.TXT and take max+1.
     // If scan fails or no files, return 1.
     uint32_t max_idx = 0;
 
@@ -76,7 +77,7 @@ static uint32_t findNextLogIndex() {
     File f = root.openNextFile();
     while (f) {
         if (!f.isDirectory()) {
-            const char* name = f.name();  // may include path on some cores; usually "00000001.TXT"
+            const char* name = f.name();  // may include path on some cores
             // Find last path segment
             const char* base = strrchr(name, '/');
             base = (base) ? (base + 1) : name;
@@ -114,7 +115,8 @@ static uint32_t findNextLogIndex() {
 static bool openAndWriteHeaderIfNeeded() {
     if (s_header_written) return true;
 
-    File file = SD.open(s_filename, FILE_WRITE);
+    // ESP32 VFS requires absolute paths (must start with '/').
+    File file = SD.open(s_filepath, FILE_WRITE);
     if (!file) return false;
 
     // Tab-separated header
@@ -133,13 +135,14 @@ static bool openAndWriteHeaderIfNeeded() {
 }
 
 bool sdLogIsReady() {
-    return s_sd_present && s_sd_mounted && (s_filename[0] != '\0');
+    return s_sd_present && s_sd_mounted && (s_filepath[0] != '\0');
 }
 
 void sdLogInit() {
     s_sd_present = false;
     s_sd_mounted = false;
     s_filename[0] = '\0';
+    s_filepath[0] = '\0';
     s_header_written = false;
 
     // Presence first
@@ -166,6 +169,16 @@ void sdLogInit() {
     const uint32_t idx = findNextLogIndex();
     snprintf(s_filename, sizeof(s_filename), "%08lu.TXT", (unsigned long)idx);
 
+    // Build absolute path for ESP32 VFS.
+    // SD_LOG_DIR is expected to be "/" or like "/LOGS" (no trailing slash).
+    if (strcmp(SD_LOG_DIR, "/") == 0) {
+        snprintf(s_filepath, sizeof(s_filepath), "/%s", s_filename);
+    } else {
+        // Ensure directory exists (ignore failure if it already exists)
+        SD.mkdir(SD_LOG_DIR);
+        snprintf(s_filepath, sizeof(s_filepath), "%s/%s", SD_LOG_DIR, s_filename);
+    }
+
     // Write header (once)
     if (!openAndWriteHeaderIfNeeded()) {
         errorSet(ERR_SD_IO);
@@ -184,6 +197,7 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
         s_sd_present = false;
         s_sd_mounted = false;
         s_filename[0] = '\0';
+        s_filepath[0] = '\0';
         s_header_written = false;
 
         errorSet(ERR_SD_MISSING);
@@ -196,7 +210,7 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
     errorClear(ERR_SD_MISSING);
 
     // If not mounted yet, try to mount + open a new file
-    if (!s_sd_mounted || s_filename[0] == '\0') {
+    if (!s_sd_mounted || s_filepath[0] == '\0') {
         sdLogInit();
         // If still not ready, stop here
         if (!sdLogIsReady()) return;
@@ -237,7 +251,7 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
         return;
     }
 
-    File file = SD.open(s_filename, FILE_APPEND);
+    File file = SD.open(s_filepath, FILE_APPEND);
     if (!file) {
         errorSet(ERR_SD_IO);
         s_sd_mounted = false;
@@ -255,7 +269,7 @@ void sdLogUpdate1Hz(uint32_t now_ms) {
     sdLogFlushQueued();
 
     file.close();
-    
+
     errorClear(ERR_SD_IO);
 }
 
@@ -267,7 +281,7 @@ void sdLogFlushQueued() {
         return;
     }
 
-    File file = SD.open(s_filename, FILE_APPEND);
+    File file = SD.open(s_filepath, FILE_APPEND);
     if (!file) {
         errorSet(ERR_SD_IO);
         s_sd_mounted = false;
@@ -288,4 +302,3 @@ void sdLogFlushQueued() {
     file.close();
     errorClear(ERR_SD_IO);
 }
-

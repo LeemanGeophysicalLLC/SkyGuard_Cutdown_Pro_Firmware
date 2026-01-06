@@ -22,7 +22,7 @@
 #include "project_config.h"
 
 /// Current settings blob version. Increment when SettingsStorageBlob layout changes.
-static constexpr uint16_t SETTINGS_VERSION = 1;
+static constexpr uint16_t SETTINGS_VERSION = 2;
 
 /// 32-bit magic tag used to verify NVS data is ours ("SGCP").
 static constexpr uint32_t SETTINGS_MAGIC = 0x53474350u; // 'S''G''C''P'

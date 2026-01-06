@@ -26,6 +26,9 @@
 /**
  * @brief Print a compact one-line status snapshot (1 Hz).
  */
+/**
+ * @brief Print a compact one-line status snapshot (1 Hz).
+ */
 static void debugPrintStatus1Hz() {
     if (!DEBUG_SERIAL) return;
 
@@ -66,8 +69,56 @@ static void debugPrintStatus1Hz() {
     }
     Serial.print("]");
 
+    // Environmental + GPS snapshot
+    // (keep it compact; print 'NA' when invalid)
+    Serial.print(" env=");
+    if (g_readings.temp_valid) {
+        Serial.print("T=");
+        Serial.print(g_readings.temp_c, 2);
+        Serial.print("C");
+    } else {
+        Serial.print("T=NA");
+    }
+    Serial.print(" ");
+    if (g_readings.pressure_valid) {
+        Serial.print("P=");
+        Serial.print(g_readings.pressure_hpa, 2);
+        Serial.print("hPa");
+    } else {
+        Serial.print("P=NA");
+    }
+    Serial.print(" ");
+    if (g_readings.humidity_valid) {
+        Serial.print("RH=");
+        Serial.print(g_readings.humidity_pct, 1);
+        Serial.print("%");
+    } else {
+        Serial.print("RH=NA");
+    }
+
+    Serial.print(" gps=");
+    if (g_readings.gps_lat_valid) {
+        Serial.print(g_readings.gps_lat_deg, 6);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print(",");
+    if (g_readings.gps_lon_valid) {
+        Serial.print(g_readings.gps_lon_deg, 6);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print(",");
+    if (g_readings.gps_alt_valid) {
+        Serial.print(g_readings.gps_alt_m, 1);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print("m");
+
     Serial.println();
 }
+
 
 /**
  * @brief Print a cut decision event.
@@ -93,7 +144,8 @@ void setup() {
     delay(50);
 
     debugPrintln("SkyGuard Cutdown Pro Debug Stream");
-
+    delay(10000);
+    debugPrintln("Charge time compelte...");
     // LED Setup
     statusLedInit();
 
@@ -124,6 +176,7 @@ void setup() {
 
     // Init servo mechanism and do the wiggle test
     servoReleaseInit();
+    delay(10000);
     servoReleaseWiggle();
 
     debugPrintln("Setup function complete");

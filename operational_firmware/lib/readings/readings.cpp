@@ -195,7 +195,7 @@ static void resetLaunchDetectionRuntime() {
 bool setupEnvironmental()
 {
     // Startup the BME environmental sensor
-    if (!bme.begin()) {
+    if (!bme.begin(0x76)) {
         debugPrintln("Could not find a valid BME680 sensor, check wiring!");
         errorSet(ERR_ENV_SENSOR);
         return false;
@@ -212,6 +212,8 @@ bool setupEnvironmental()
 }
 
 void readingsInit() {
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
+
     memset(&g_readings, 0, sizeof(g_readings));
     clearSensors(g_readings);
     initExternalInputs(g_readings);
