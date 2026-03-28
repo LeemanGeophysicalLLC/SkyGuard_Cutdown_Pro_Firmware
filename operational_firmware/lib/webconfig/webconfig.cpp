@@ -26,7 +26,7 @@
  *    fw_enabled, fw_device_id, fw_access_token,
  *    gc_require_launch, gc_require_fix,
  *    ext0_enabled/ext0_active_high/ext0_debounce_ms, ext1_...,
- *    ir_enabled/ir_remote_cut/ir_token/ir_ascent_s/ir_descent_s/ir_descent_dur_s/ir_beacon_s,
+ *    ir_enabled/ir_token/ir_ascent_s/ir_descent_s/ir_descent_dur_s/ir_beacon_s,
  *    a0_*..a9_* and b0_*..b9_* for bucket conditions.
  *
  * Banner feedback:
@@ -444,9 +444,9 @@ static String buildPrefillJs(const SystemConfig& cfg) {
     js += jsEscapeSingleQuoted(fw);
     js += F("');\n");
 
-    // Device name pill: show CONFIG-<serial> for now
+    // Header pill: show serial number directly
     char dev[32];
-    snprintf(dev, sizeof(dev), "CONFIG-%lu", (unsigned long)cfg.device.serial_number);
+    snprintf(dev, sizeof(dev), "%lu", (unsigned long)cfg.device.serial_number);
     js += F("setTxtById('deviceName','");
     js += jsEscapeSingleQuoted(dev);
     js += F("');\n");
@@ -506,9 +506,6 @@ js += F("');\n");
     // Iridium
     js += F("setCheck('ir_enabled',");
     js += (cfg.iridium.enabled ? "1" : "0");
-    js += F(");\n");
-    js += F("setCheck('ir_remote_cut',");
-    js += (cfg.iridium.cutdown_on_command ? "1" : "0");
     js += F(");\n");
     js += F("setText('ir_token','");
     js += jsEscapeSingleQuoted(cfg.iridium.cutdown_token);
@@ -762,9 +759,9 @@ void webconfigValidateCandidate(const SystemConfig& candidate, WebConfigValidati
         if (candidate.iridium.descent_duration_s != 0 && candidate.iridium.descent_duration_s < 10) {
             addError("Iridium descent duration must be 0 or >= 10 s");
         }
-        // Token: allow empty if remote cut disabled; otherwise require non-empty.
-        if (candidate.iridium.cutdown_on_command && candidate.iridium.cutdown_token[0] == '\0') {
-            addError("Iridium remote cut token cannot be empty when remote cut is enabled");
+        // Remote cut is always enabled whenever Iridium telemetry is enabled.
+        if (candidate.iridium.cutdown_token[0] == '\0') {
+            addError("Iridium remote cut token cannot be empty when Iridium is enabled");
         }
     }
 
@@ -920,7 +917,7 @@ static void applyFormToCandidate(SystemConfig& candidate) {
 
     // Iridium
     candidate.iridium.enabled = getBoolArg("ir_enabled", candidate.iridium.enabled);
-    candidate.iridium.cutdown_on_command = getBoolArg("ir_remote_cut", candidate.iridium.cutdown_on_command);
+    candidate.iridium.cutdown_on_command = true;
     if (g_server->hasArg("ir_token")) {
         copyArgToBuf(candidate.iridium.cutdown_token, sizeof(candidate.iridium.cutdown_token), g_server->arg("ir_token"));
     }

@@ -218,12 +218,12 @@ void settingsApplyDefaults(SystemConfig& cfg) {
     for (auto& c : cfg.bucketB) initCondition(c);
 
     // External inputs
-    cfg.external_inputs[0].enabled = true;
-    cfg.external_inputs[0].active_high = false;
+    cfg.external_inputs[0].enabled = false;
+    cfg.external_inputs[0].active_high = true;
     cfg.external_inputs[0].debounce_ms = 50;
 
     cfg.external_inputs[1].enabled = false;
-    cfg.external_inputs[1].active_high = false;
+    cfg.external_inputs[1].active_high = true;
     cfg.external_inputs[1].debounce_ms = 50;
 
     // Iridium defaults (disabled by default; some units omit modem)

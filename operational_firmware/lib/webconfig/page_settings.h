@@ -397,8 +397,8 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
         <span class="pill-value" id="fwVersion">vX.Y.Z</span>
       </span>
       <span class="pill-group">
-        <span class="pill-label">Device</span>
-        <span class="pill-value" id="deviceName">SGCP-XXXX</span>
+        <span class="pill-label">Serial Num</span>
+        <span class="pill-value" id="deviceName">----</span>
       </span>
     </div>
   </header>
@@ -433,10 +433,7 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
       <!-- DEVICE / WIFI -->
       <section class="section">
-        <h2>
-          Device &amp; WiFi
-          <span class="tag">CONFIG AP identity</span>
-        </h2>
+        <h2>Device &amp; WiFi</h2>
         <p class="help">
           CONFIG access point is <strong>CONFIG-&lt;serial&gt;</strong> and uses the password below.
           Serial number is preserved across factory resets (hold button at boot).
@@ -450,10 +447,7 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
       <!-- CUTDOWN LOGIC -->
       <section class="section">
-        <h2>
-          Cutdown Logic
-          <span class="tag">Bucket A &amp; B</span>
-        </h2>
+        <h2>Cutdown Logic</h2>
         <p class="help">
           The cutdown fires when <strong>all enabled requirements</strong> in Bucket&nbsp;A are true and
           <strong>any enabled trigger</strong> in Bucket&nbsp;B becomes true. External inputs and Iridium
@@ -1242,7 +1236,7 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
       <section class="section">
         <h2>Iridium Telemetry &amp; Remote Cut</h2>
         <p class="help">
-          Configure progressive telemetry rates and optional remote cut commands via Iridium messages. Mailbox reception is performed during transmit sessions (no separate polling interval).
+          Configure progressive telemetry rates and the remote cut token used by Iridium messages. Mailbox reception is performed during transmit sessions, so remote cut is only active when Iridium telemetry is enabled.
         </p>
 
         <div class="section-grid">
@@ -1252,13 +1246,6 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
               <input type="checkbox" name="ir_enabled" value="1" checked>
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
               <span class="toggle-label">Iridium telemetry enabled</span>
-            </label>
-
-            <input type="hidden" name="ir_remote_cut" value="0">
-            <label class="toggle" style="margin-top:6px;">
-              <input type="checkbox" name="ir_remote_cut" value="1" checked>
-              <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              <span class="toggle-label">Allow remote Iridium cut command</span>
             </label>
 
             <div class="field" style="margin-top:6px;">
