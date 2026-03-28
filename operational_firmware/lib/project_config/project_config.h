@@ -170,6 +170,8 @@ static constexpr bool SD_LOG_EVERY_TICK = true;
 // -------------------------
 static constexpr uint32_t IRIDIUM_SERIAL_BAUD = 19200;     // RockBLOCK default is often 19200
 static constexpr uint8_t  IRIDIUM_FAILS_BEFORE_ERROR = 3;
+static constexpr uint16_t IRIDIUM_AT_TIMEOUT_S = 3;
+static constexpr uint32_t IRIDIUM_BEGIN_TIMEOUT_MS = 180000;
 
 // If PIN_SAT_POWER enables power to modem:
 static constexpr bool SAT_POWER_ACTIVE_HIGH = true;

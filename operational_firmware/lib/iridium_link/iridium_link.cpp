@@ -20,6 +20,9 @@ static HardwareSerial& SAT = Serial1;
 static IridiumSBD modem(SAT);
 
 static bool s_remote_cut_latched = false;
+static bool s_modem_ready = false;
+static bool s_cancel_deadline_active = false;
+static uint32_t s_cancel_deadline_ms = 0;
 
 static uint32_t s_last_tx_ms = 0;
 static uint8_t  s_fail_count = 0;
@@ -27,6 +30,21 @@ static uint8_t  s_fail_count = 0;
 static volatile bool s_iridium_busy = false;
 
 bool iridiumIsBusy() { return s_iridium_busy; }
+
+static void clearCancelDeadline() {
+    s_cancel_deadline_active = false;
+    s_cancel_deadline_ms = 0;
+}
+
+static void startCancelDeadline(uint32_t duration_ms) {
+    s_cancel_deadline_active = (duration_ms > 0);
+    s_cancel_deadline_ms = millis() + duration_ms;
+}
+
+static bool cancelDeadlineExpired() {
+    if (!s_cancel_deadline_active) return false;
+    return (int32_t)(millis() - s_cancel_deadline_ms) >= 0;
+}
 
 // Weak hook: application may override to run time-critical work during long Iridium sessions.
 // Keep this FAST (no SD writes, no long I/O).
@@ -58,7 +76,7 @@ void iridiumServiceDuringSession() {
 // IridiumSBD calls this periodically during long operations (weak in library; override here).
 bool ISBDCallback() {
     iridiumServiceDuringSession();
-    return true; // true = continue, false = cancel
+    return !cancelDeadlineExpired(); // true = continue, false = cancel
 }
 
 static void satPowerOn() {
@@ -71,6 +89,37 @@ static void satPowerOff() {
     pinMode(PIN_SAT_POWER, OUTPUT);
     if (SAT_POWER_ACTIVE_HIGH) digitalWrite(PIN_SAT_POWER, LOW);
     else                       digitalWrite(PIN_SAT_POWER, HIGH);
+}
+
+static void markModemNotReady() {
+    s_modem_ready = false;
+}
+
+static bool ensureModemReady(uint32_t begin_timeout_ms) {
+    if (s_modem_ready) return true;
+
+    satPowerOn();
+    delay(250);
+
+    SAT.begin(IRIDIUM_SERIAL_BAUD, SERIAL_8N1, PIN_SAT_RX, PIN_SAT_TX);
+    modem.adjustATTimeout(IRIDIUM_AT_TIMEOUT_S);
+    modem.setPowerProfile(IridiumSBD::DEFAULT_POWER_PROFILE);
+
+    debugPrintln("[INFO] Iridium modem begin attempt");
+    startCancelDeadline(begin_timeout_ms);
+    const int err = modem.begin();
+    clearCancelDeadline();
+    if (err != ISBD_SUCCESS) {
+        markModemNotReady();
+        satPowerOff();
+        debugPrint("[WARN] Iridium begin failed err=");
+        Serial.println(err);
+        return false;
+    }
+
+    s_modem_ready = true;
+    debugPrintln("[INFO] Iridium begin OK");
+    return true;
 }
 
 static uint32_t currentTxIntervalS() {
@@ -197,6 +246,10 @@ static void handleRxMessage(const uint8_t* rx, size_t rxLen) {
 }
 
 static bool doTelemetrySendAndReceive() {
+    if (!ensureModemReady(IRIDIUM_BEGIN_TIMEOUT_MS)) {
+        return false;
+    }
+
     // If user disables TX in this phase by setting interval 0, caller won’t call us.
     // Build a compact CSV-ish payload:
     // T,<serial>,<t_power_s>,<flight>,<lat>,<lon>,<alt>,<temp>,<p>,<rh>,<cut>,<reason>
@@ -256,6 +309,8 @@ static bool doTelemetrySendAndReceive() {
     // int err = modem.sendReceiveSBDBinary((uint8_t*)tx, txLen, rx, rxLen);
 
     if (err != ISBD_SUCCESS) {
+        markModemNotReady();
+        satPowerOff();
         return false;
     }
 
@@ -268,34 +323,27 @@ static bool doTelemetrySendAndReceive() {
 
 void iridiumInit() {
     s_remote_cut_latched = false;
+    s_modem_ready = false;
     s_last_tx_ms = 0;
     s_fail_count = 0;
+    clearCancelDeadline();
 
-    // If disabled, keep modem off and clear error
+    // If disabled, keep modem off and clear error.
     if (!g_settings.iridium.enabled) {
         satPowerOff();
         errorClear(ERR_IRIDIUM);
         return;
     }
 
-    satPowerOn();
-    delay(250);
-
-    SAT.begin(IRIDIUM_SERIAL_BAUD, SERIAL_8N1, PIN_SAT_RX, PIN_SAT_TX);
-
-    modem.setPowerProfile(IridiumSBD::DEFAULT_POWER_PROFILE);
-
-    const int err = modem.begin();
-    if (err != ISBD_SUCCESS) {
-        // Don’t immediately hard-fail; we’ll retry on next scheduled operation.
-        s_fail_count = 1;
-        if (s_fail_count >= IRIDIUM_FAILS_BEFORE_ERROR) errorSet(ERR_IRIDIUM);
-        debugPrintln("[WARN] Iridium begin failed");
-    } else {
+    if (ensureModemReady(IRIDIUM_BEGIN_TIMEOUT_MS)) {
         s_fail_count = 0;
         errorClear(ERR_IRIDIUM);
-        debugPrintln("[INFO] Iridium begin OK");
+        return;
     }
+
+    // Boot must remain recoverable. A failed begin is a trouble condition, not a startup lock.
+    s_fail_count = IRIDIUM_FAILS_BEFORE_ERROR;
+    errorSet(ERR_IRIDIUM);
 }
 
 bool iridiumGetRemoteCutRequestAndClear() {
@@ -307,6 +355,8 @@ bool iridiumGetRemoteCutRequestAndClear() {
 void iridiumUpdate1Hz(uint32_t now_ms) {
     // Disabled: nothing to do.
     if (!g_settings.iridium.enabled) {
+        satPowerOff();
+        markModemNotReady();
         errorClear(ERR_IRIDIUM);
         return;
     }

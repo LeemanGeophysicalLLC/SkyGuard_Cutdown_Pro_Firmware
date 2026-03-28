@@ -186,18 +186,30 @@ void setup() {
 
     statusLedShowBootInProgress();
 
+    debugPrintln("[BOOT] Boot charge complete");
+
     // Iridium Modem
+    debugPrintln("[BOOT] iridiumInit start");
     iridiumInit();
+    debugPrintln("[BOOT] iridiumInit done");
 
     // Init SD logging
+    debugPrintln("[BOOT] sdLogInit start");
     sdLogInit();
+    debugPrintln("[BOOT] sdLogInit done");
 
     // Init cut logic runtime (accumulators, etc).
+    debugPrintln("[BOOT] cutLogicInit start");
     cutLogicInit();
+    debugPrintln("[BOOT] cutLogicInit done");
 
     // Init servo mechanism and do the wiggle test
+    debugPrintln("[BOOT] servoReleaseInit start");
     servoReleaseInit();
+    debugPrintln("[BOOT] servoReleaseInit done");
+    debugPrintln("[BOOT] servoReleaseWiggle start");
     servoReleaseWiggle();
+    debugPrintln("[BOOT] servoReleaseWiggle done");
 
     debugPrintln("Setup function complete");
 
