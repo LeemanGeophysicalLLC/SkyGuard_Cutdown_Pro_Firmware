@@ -26,14 +26,21 @@ static constexpr uint16_t BOOT_OFF_HOLD_MS = 1000;
 static constexpr uint16_t BOOT_BREATHE_CYCLE_MS = 2000;
 static constexpr uint16_t BOOT_BREATHE_STEP_MS = 25;
 
+static void refreshPixelDriver() {
+    // Defensive re-init: on ESP32 the NeoPixel backend can occasionally end up
+    // in a bad state across config-mode / WiFi transitions. Re-applying begin
+    // and brightness is cheap for a single pixel and helps the LED recover.
+    s_px.begin();
+    s_px.setBrightness(STATUS_LED_BRIGHTNESS);
+}
+
 static void setPixel(uint8_t r, uint8_t g, uint8_t b) {
     s_px.setPixelColor(0, s_px.Color(r, g, b));
     s_px.show();
 }
 
 void statusLedInit() {
-    s_px.begin();
-    s_px.setBrightness(STATUS_LED_BRIGHTNESS);   // adjust if needed
+    refreshPixelDriver();
     setPixel(0, 0, 0);
 
     s_solid = false;
@@ -94,6 +101,7 @@ void statusLedShowBootChargeBreathe(uint32_t duration_ms) {
 
 void statusLedUpdate1Hz(uint32_t now_ms) {
     (void)now_ms;
+    refreshPixelDriver();
     s_pulse_width_ms = PULSE_WIDTH_MS;
 
     // Priority 1: CRIT -> 3 red pulses
