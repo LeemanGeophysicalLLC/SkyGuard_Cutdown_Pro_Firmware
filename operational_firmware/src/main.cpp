@@ -139,15 +139,18 @@ void setup() {
 
     errorsInit();
 
+    // LED signs-of-life first so power-on always has visible feedback.
+    statusLedInit();
+    statusLedShowBootSequence();
+
     // Serial first for bring-up visibility.
     Serial.begin(DEBUG_SERIAL_BAUD);
     delay(50);
 
     debugPrintln("SkyGuard Cutdown Pro Debug Stream");
-    delay(10000);
-    debugPrintln("Charge time compelte...");
-    // LED Setup
-    statusLedInit();
+    debugPrintln("Boot supercap charge phase...");
+    statusLedShowBootChargeBreathe(BOOT_SUPERCAP_CHARGE_MS);
+    statusLedShowBootInProgress();
 
     // Load settings (or defaults).
     settingsInit();
@@ -176,10 +179,14 @@ void setup() {
 
     // Init servo mechanism and do the wiggle test
     servoReleaseInit();
-    delay(10000);
     servoReleaseWiggle();
 
     debugPrintln("Setup function complete");
+
+    // Transition from boot indication to normal runtime indication immediately.
+    const uint32_t now_ms = millis();
+    statusLedUpdate1Hz(now_ms);
+    statusLedUpdateFast(now_ms);
 }
 
 void loop() {
@@ -234,6 +241,11 @@ void loop() {
 
             // Perform physical release (one-shot latched).
             servoReleaseRelease();
+
+            // Refresh LED state immediately so termination is visible without
+            // waiting for the next 1 Hz scheduler tick.
+            statusLedUpdate1Hz(now_ms);
+            statusLedUpdateFast(now_ms);
 
             // Optional hygiene: if you later keep external inputs latched somewhere,
             // clear them here. In the current 1 Hz quantized model, we do not latch them.

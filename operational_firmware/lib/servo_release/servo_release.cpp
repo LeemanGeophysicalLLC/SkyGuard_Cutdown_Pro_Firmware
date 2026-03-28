@@ -7,6 +7,7 @@
 #include "servo_release.h"
 
 #include "pins.h"
+#include "project_config.h"
 
 #include <Arduino.h>
 #include <ESP32Servo.h>
@@ -79,11 +80,30 @@ static void writeAngleClamped(int deg) {
     g_servo.write(deg);
 }
 
+static void detachServo() {
+    if (!g_attached) return;
+    g_servo.detach();
+    g_attached = false;
+}
+
 /**
  * @brief Set internal state after commanding motion.
  */
 static void setState(ServoReleaseState st) {
     g_state = st;
+}
+
+/**
+ * @brief Attach, move, hold briefly, then detach to avoid continuous servo power.
+ */
+static bool moveServoAndDetach(int deg, uint32_t hold_ms, ServoReleaseState st) {
+    if (!ensureAttached()) return false;
+
+    writeAngleClamped(deg);
+    setState(st);
+    delay(hold_ms);
+    detachServo();
+    return true;
 }
 
 // -------------------------
@@ -98,11 +118,6 @@ void servoReleaseInit() {
      */
     g_released_latched = false;
     g_state = SERVO_STATE_UNKNOWN;
-
-    if (!ensureAttached()) {
-        return;
-    }
-
     (void)servoReleaseLock();
 }
 
@@ -113,47 +128,45 @@ void servoReleaseWiggle() {
      *
      * Call only when it is safe to temporarily enter RELEASE.
      */
-    if (!ensureAttached()) return;
-
     // IMPORTANT: Wiggle is a diagnostic action. It must NOT latch "released".
     // We intentionally command release position without setting g_released_latched.
-    writeAngleClamped(SERVO_POS_RELEASE_DEG);
-    delay(WIGGLE_HOLD_MS);
+    if (!moveServoAndDetach(SERVO_POS_RELEASE_DEG, WIGGLE_HOLD_MS, SERVO_STATE_RELEASED)) {
+        return;
+    }
 
-    // Return to lock.
-    // If already latched released (shouldn't happen in normal use), we still refuse to re-arm.
-    (void)servoReleaseLock();
+    (void)moveServoAndDetach(SERVO_POS_LOCK_DEG, SERVO_MOVE_HOLD_MS, SERVO_STATE_LOCKED);
 }
 
 bool servoReleaseLock() {
     /**
      * Lock is allowed ONLY if we have not latched a release.
      */
-    if (!ensureAttached()) return false;
-
     if (g_released_latched) {
         setState(SERVO_STATE_RELEASED);
         return false;
     }
 
-    writeAngleClamped(SERVO_POS_LOCK_DEG);
-    setState(SERVO_STATE_LOCKED);
-    return true;
+    return moveServoAndDetach(SERVO_POS_LOCK_DEG, SERVO_MOVE_HOLD_MS, SERVO_STATE_LOCKED);
 }
 
 bool servoReleaseRelease() {
     /**
      * Release is a one-shot latch.
      */
-    if (!ensureAttached()) return false;
-
     if (!g_released_latched) {
-        writeAngleClamped(SERVO_POS_RELEASE_DEG);
         g_released_latched = true;
-        setState(SERVO_STATE_RELEASED);
+        return moveServoAndDetach(SERVO_POS_RELEASE_DEG, SERVO_MOVE_HOLD_MS, SERVO_STATE_RELEASED);
     }
 
     return true;
+}
+
+bool servoReleaseLockForTest() {
+    return moveServoAndDetach(SERVO_POS_LOCK_DEG, SERVO_MOVE_HOLD_MS, SERVO_STATE_LOCKED);
+}
+
+bool servoReleaseReleaseForTest() {
+    return moveServoAndDetach(SERVO_POS_RELEASE_DEG, SERVO_MOVE_HOLD_MS, SERVO_STATE_RELEASED);
 }
 
 ServoReleaseState servoReleaseGetState() {

@@ -141,6 +141,16 @@ static constexpr float LAUNCH_PRESSURE_DROP_HPA = 5.0f;
 static constexpr uint8_t LAUNCH_PERSIST_REQUIRED_S = 5;
 
 // -------------------------
+// Servo release
+// -------------------------
+
+/// How long to keep the servo attached after commanding a move (ms).
+static constexpr uint32_t SERVO_MOVE_HOLD_MS = 1500;
+
+/// How long to spend charging the supercap before the boot wiggle (ms).
+static constexpr uint32_t BOOT_SUPERCAP_CHARGE_MS = 20000;
+
+// -------------------------
 // SD logging
 // -------------------------
 

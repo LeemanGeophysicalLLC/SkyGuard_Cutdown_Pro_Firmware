@@ -41,6 +41,8 @@
 #include "readings.h"
 #include "state.h"
 #include "iridium_link.h"
+#include "servo_release.h"
+#include "status_led.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -202,6 +204,39 @@ static bool toBool(const String& s, bool def) {
     if (s == "1" || s == "true" || s == "on" || s == "ON") return true;
     if (s == "0" || s == "false" || s == "off" || s == "OFF") return false;
     return def;
+}
+
+/**
+ * @brief Read the last submitted value for a form field.
+ *
+ * This matters for checkbox patterns that use a hidden "0" input followed by a
+ * checkbox "1" input with the same field name. WebServer::arg(name) may return
+ * the first value, so we explicitly scan for the last one.
+ */
+static bool getLastArgValue(const char* name, String& out_value) {
+    if (!g_server || !name) return false;
+
+    bool found = false;
+    const int count = g_server->args();
+    for (int i = 0; i < count; i++) {
+        if (g_server->argName(i) == name) {
+            out_value = g_server->arg(i);
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+/**
+ * @brief Read a checkbox-style boolean from the submitted form.
+ */
+static bool getBoolArg(const char* name, bool def) {
+    String value;
+    if (!getLastArgValue(name, value)) {
+        return def;
+    }
+    return toBool(value, def);
 }
 
 /**
@@ -380,11 +415,14 @@ static const char* opToToken(uint8_t op) {
  *  - Instead we inject a small <script> before </body> that sets values by name/id.
  *  - This keeps your HTML intact and makes later UI changes easy.
  */
-static String buildPrefillScript(const SystemConfig& cfg) {
+// Build JavaScript (no <script> wrapper). Served from /prefill.js to avoid
+// copying the full HTML page into heap (prevents heap fragmentation + crashes).
+static String buildPrefillJs(const SystemConfig& cfg) {
     String js;
-    js.reserve(8192);
+    // Keep reserve modest; large contiguous reserves can fail under WiFi heap pressure.
+    js.reserve(4096);
 
-    js += F("<script>(function(){\n");
+    js += F("(function(){\n");
     js += F("function setValById(id,v){var e=document.getElementById(id); if(e){e.value=v;}}\n");
     js += F("function setTxtById(id,t){var e=document.getElementById(id); if(e){e.textContent=t;}}\n");
     js += F("function setCheck(name,checked){var e=document.querySelector('input[type=\"checkbox\"][name=\"'+name+'\"]'); if(e){e.checked=!!checked;}}\n");
@@ -550,7 +588,7 @@ js += F("');\n");
         js += F("');\n");
     }
 
-    js += F("})();</script>\n");
+    js += F("})();\n");
     return js;
 }
 
@@ -561,10 +599,10 @@ static String injectPrefill(const String& html, const SystemConfig& cfg) {
     const int pos = html.lastIndexOf(F("</body>"));
     if (pos < 0) {
         // If </body> isn't found, append at end as best-effort.
-        return html + buildPrefillScript(cfg);
+        return html + String(F("<script>")) + buildPrefillJs(cfg) + String(F("</script>\n"));
     }
     String out;
-    const String script = buildPrefillScript(cfg);
+    const String script = String(F("<script>")) + buildPrefillJs(cfg) + String(F("</script>\n"));
     out.reserve(html.length() + script.length() + 16);
     out = html.substring(0, pos) + script + html.substring(pos);
     return out;
@@ -654,18 +692,16 @@ static void handleStatusJson() {
 static void sendSettingsPage(const char* banner_message, bool is_error) {
     if (!g_server) return;
 
-    if (banner_message && banner_message[0]) {
-        g_server->sendHeader("X-SGCP-Message", banner_message);
+    // Fast path: serve directly from PROGMEM when no feedback banner is needed.
+    if (!banner_message || !banner_message[0]) {
+        g_server->send_P(200, "text/html", SETTINGS_PAGE_HTML);
+        return;
     }
 
+    // For save/validation feedback, build a one-off HTML response with an injected
+    // banner. This keeps the default path memory-light while still surfacing errors.
     String html = FPSTR(SETTINGS_PAGE_HTML);
-
-    // Visible banner (optional)
     html = injectBanner(html, banner_message, is_error);
-
-    // Prefill current values
-    html = injectPrefill(html, g_settings);
-
     g_server->send(200, "text/html", html);
 }
 
@@ -791,7 +827,7 @@ static void parseConditionRow(char prefix, uint8_t idx, Condition& c) {
 
     // enabled
     snprintf(key, sizeof(key), "%c%u_enabled", prefix, (unsigned)idx);
-    c.enabled = g_server->hasArg(key) ? toBool(g_server->arg(key), false) : false;
+    c.enabled = getBoolArg(key, false);
 
     // var
     snprintf(key, sizeof(key), "%c%u_var", prefix, (unsigned)idx);
@@ -835,27 +871,19 @@ static void applyFormToCandidate(SystemConfig& candidate) {
     }
 
     // Global cut toggles (UI only exposes require_launch; require_fix is forced false)
-    if (g_server->hasArg("gc_require_launch")) {
-        candidate.global_cutdown.require_launch_before_cut =
-            toBool(g_server->arg("gc_require_launch"), candidate.global_cutdown.require_launch_before_cut);
-    }
+    candidate.global_cutdown.require_launch_before_cut =
+        getBoolArg("gc_require_launch", candidate.global_cutdown.require_launch_before_cut);
 
     // Termination detector (term_*)
-    if (g_server->hasArg("term_enabled")) {
-        candidate.term.enabled = toBool(g_server->arg("term_enabled"), candidate.term.enabled);
-    }
+    candidate.term.enabled = getBoolArg("term_enabled", candidate.term.enabled);
     if (g_server->hasArg("term_sustain_s")) {
         candidate.term.sustain_s = toU16(g_server->arg("term_sustain_s"), candidate.term.sustain_s);
     }
-    if (g_server->hasArg("term_use_gps")) {
-        candidate.term.use_gps = toBool(g_server->arg("term_use_gps"), candidate.term.use_gps);
-    }
+    candidate.term.use_gps = getBoolArg("term_use_gps", candidate.term.use_gps);
     if (g_server->hasArg("term_gps_drop_m")) {
         candidate.term.gps_drop_m = toF32(g_server->arg("term_gps_drop_m"), candidate.term.gps_drop_m);
     }
-    if (g_server->hasArg("term_use_pressure")) {
-        candidate.term.use_pressure = toBool(g_server->arg("term_use_pressure"), candidate.term.use_pressure);
-    }
+    candidate.term.use_pressure = getBoolArg("term_use_pressure", candidate.term.use_pressure);
     if (g_server->hasArg("term_pressure_rise_hpa")) {
         candidate.term.pressure_rise_hpa = toF32(g_server->arg("term_pressure_rise_hpa"), candidate.term.pressure_rise_hpa);
     }
@@ -865,7 +893,7 @@ static void applyFormToCandidate(SystemConfig& candidate) {
         char k[24];
 
         snprintf(k, sizeof(k), "ext%u_enabled", (unsigned)i);
-        if (g_server->hasArg(k)) candidate.external_inputs[i].enabled = toBool(g_server->arg(k), candidate.external_inputs[i].enabled);
+        candidate.external_inputs[i].enabled = getBoolArg(k, candidate.external_inputs[i].enabled);
 
         snprintf(k, sizeof(k), "ext%u_active_high", (unsigned)i);
         if (g_server->hasArg(k)) candidate.external_inputs[i].active_high = toBool(g_server->arg(k), candidate.external_inputs[i].active_high);
@@ -875,12 +903,8 @@ static void applyFormToCandidate(SystemConfig& candidate) {
     }
 
     // Iridium
-    if (g_server->hasArg("ir_enabled")) {
-        candidate.iridium.enabled = toBool(g_server->arg("ir_enabled"), candidate.iridium.enabled);
-    }
-    if (g_server->hasArg("ir_remote_cut")) {
-        candidate.iridium.cutdown_on_command = toBool(g_server->arg("ir_remote_cut"), candidate.iridium.cutdown_on_command);
-    }
+    candidate.iridium.enabled = getBoolArg("ir_enabled", candidate.iridium.enabled);
+    candidate.iridium.cutdown_on_command = getBoolArg("ir_remote_cut", candidate.iridium.cutdown_on_command);
     if (g_server->hasArg("ir_token")) {
         copyArgToBuf(candidate.iridium.cutdown_token, sizeof(candidate.iridium.cutdown_token), g_server->arg("ir_token"));
     }
@@ -930,19 +954,19 @@ static void handleSave() {
 
     if (!vr.ok) {
         g_saved_ok = false;
-        sendSettingsPage(vr.summary[0] ? vr.summary : "Validation failed", true);
+        g_server->send(400, "text/plain", vr.summary[0] ? vr.summary : "Validation failed");
         return;
     }
 
     g_settings = candidate;
     if (!settingsSave()) {
         g_saved_ok = false;
-        sendSettingsPage("Save failed (NVS write)", true);
+        g_server->send(500, "text/plain", "Save failed (NVS write)");
         return;
     }
 
     g_saved_ok = true;
-    sendSettingsPage("Saved OK - restarting...", false);
+    g_server->send(200, "text/plain", "Saved OK - restarting...");
 }
 
 /**
@@ -951,7 +975,7 @@ static void handleSave() {
 static void handleExit() {
     if (!g_server) return;
     g_exit_requested = true;
-    sendSettingsPage("Exiting - restarting...", false);
+    g_server->send(200, "text/plain", "Exiting - restarting...");
 }
 
 /**
@@ -960,7 +984,7 @@ static void handleExit() {
 static void handleDefaults() {
     if (!g_server) return;
     g_defaults_requested = true;
-    sendSettingsPage("Restoring defaults (serial preserved) - restarting...", false);
+    g_server->send(200, "text/plain", "Restoring defaults (serial preserved) - restarting...");
 }
 
 /**
@@ -970,7 +994,13 @@ static void handleDefaults() {
  */
 static void handleLock() {
     if (!g_server) return;
-    sendSettingsPage("Lock command received (release mechanism not wired yet).", false);
+
+    if (servoReleaseLockForTest()) {
+        g_server->send(200, "text/plain", "LOCK OK");
+        return;
+    }
+
+    g_server->send(409, "text/plain", "LOCK IGNORED");
 }
 
 /**
@@ -980,7 +1010,13 @@ static void handleLock() {
  */
 static void handleRelease() {
     if (!g_server) return;
-    sendSettingsPage("Release command received (release mechanism not wired yet).", false);
+
+    if (servoReleaseReleaseForTest()) {
+        g_server->send(200, "text/plain", "RELEASE OK");
+        return;
+    }
+
+    g_server->send(500, "text/plain", "RELEASE FAILED");
 }
 
 /**
@@ -1155,14 +1191,18 @@ bool webconfigPollButton() {
         g_press_start_ms = now_ms;
     }
 
-    if (released_edge) {
-        const uint32_t press_dur = (g_press_start_ms == 0) ? 0 : (now_ms - g_press_start_ms);
-        g_press_start_ms = 0;
-
+    // Enter config mode on a stable hold instead of waiting for release.
+    if (g_cfg_btn.stable_pressed && g_press_start_ms != 0) {
+        const uint32_t press_dur = now_ms - g_press_start_ms;
         if (press_dur >= CONFIG_BTN_MIN_PRESS_MS) {
+            g_press_start_ms = 0;
             webconfigEnter(); // blocking; restarts on exit
             return true;
         }
+    }
+
+    if (released_edge) {
+        g_press_start_ms = 0;
     }
 
     return false;
@@ -1183,6 +1223,7 @@ void webconfigEnter() {
      */
     char ssid[32];
     webconfigFormatSsid(ssid, sizeof(ssid));
+    stateSetSystemMode(MODE_CONFIG);
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, g_settings.device.ap_password);
@@ -1196,9 +1237,16 @@ void webconfigEnter() {
     g_defaults_requested = false;
 
     // Routes
-    // Routes
     server.on("/", HTTP_GET, [&]() {
         sendSettingsPage(nullptr, false);
+    });
+
+    // Dynamic form prefill (served as JS to avoid huge heap allocations)
+    server.on("/prefill.js", HTTP_GET, [&]() {
+        if (!g_server) return;
+        const String js = buildPrefillJs(g_settings);
+        g_server->sendHeader("Cache-Control", "no-store");
+        g_server->send(200, "application/javascript", js);
     });
 
     server.on("/status.json", HTTP_GET, [&]() {
@@ -1241,14 +1289,17 @@ void webconfigEnter() {
     while (true) {
         const uint32_t now_ms = millis();
 
+        statusLedUpdateFast(now_ms);
+
         // Keep GPS UART drained so live view stays responsive.
         readingsDrainGPS();
 
-        // Update sensor snapshot at ~1 Hz while in config mode.
-        static uint32_t next_readings_ms = 0;
-        if ((int32_t)(now_ms - next_readings_ms) >= 0) {
-            next_readings_ms = now_ms + 1000;
+        // Keep the runtime clock and live view moving while config mode blocks
+        // autonomous flight behaviors.
+        if (stateTick1Hz(now_ms)) {
+            stateOn1HzTick(now_ms);
             readingsUpdate1Hz(now_ms);
+            statusLedUpdate1Hz(now_ms);
         }
 
         server.handleClient();
@@ -1297,4 +1348,3 @@ void webconfigEnter() {
         }
     }
 }
-

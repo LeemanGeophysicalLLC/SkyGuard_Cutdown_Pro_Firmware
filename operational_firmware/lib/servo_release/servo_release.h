@@ -76,6 +76,26 @@ bool servoReleaseLock();
 bool servoReleaseRelease();
 
 /**
+ * @brief Command LOCK for bench testing without changing the flight latch.
+ *
+ * Intended only for config-mode ground testing. Unlike servoReleaseLock(), this
+ * ignores the one-shot release latch and simply commands the mechanism.
+ *
+ * @return true if the servo command was issued; false if not initialized.
+ */
+bool servoReleaseLockForTest();
+
+/**
+ * @brief Command RELEASE for bench testing without changing the flight latch.
+ *
+ * Intended only for config-mode ground testing. Unlike servoReleaseRelease(),
+ * this does not permanently latch the release state.
+ *
+ * @return true if the servo command was issued; false if not initialized.
+ */
+bool servoReleaseReleaseForTest();
+
+/**
  * @brief Get current mechanism state (best-effort).
  *
  * @return Current ServoReleaseState.

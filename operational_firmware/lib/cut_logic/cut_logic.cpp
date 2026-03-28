@@ -8,6 +8,7 @@
 #include "readings.h"
 #include "state.h"
 #include "servo_release.h"
+#include "status_led.h"
 #include "iridium_link.h"
 #include <string.h>
 #include <math.h>
@@ -230,6 +231,8 @@ void cutLogicUpdate1Hz(uint32_t now_ms) {
     if (d.should_cut) {
         stateSetCutFired(d.reason, now_ms);
         servoReleaseRelease();
+        statusLedUpdate1Hz(now_ms);
+        statusLedUpdateFast(now_ms);
     }
 }
 

@@ -429,19 +429,6 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
           <div class="live-item"><div class="live-label">Next Iridium transmit in (s)</div><div class="live-value" id="lv_ir_next">--</div></div>
           <div class="live-item"><div class="live-label">Last cut reason</div><div class="live-value" id="lv_cut_reason">--</div></div>
         </div>
-<div class="live-value">GROUND / IN_FLIGHT / TERMINATED</div></div>
-          <div class="live-item"><div class="live-label">Time since power on (s)</div><div class="live-value">1234</div></div>
-          <div class="live-item"><div class="live-label">Time since launch (s)</div><div class="live-value">0 (not launched)</div></div>
-          <div class="live-item"><div class="live-label">GPS fix quality</div><div class="live-value">0 (no fix) / 1+ (fix)</div></div>
-          <div class="live-item"><div class="live-label">Latitude (deg)</div><div class="live-value">36.0000</div></div>
-          <div class="live-item"><div class="live-label">Longitude (deg)</div><div class="live-value">-94.0000</div></div>
-          <div class="live-item"><div class="live-label">GPS altitude (m)</div><div class="live-value">12345</div></div>
-          <div class="live-item"><div class="live-label">Pressure (hPa)</div><div class="live-value">850.0</div></div>
-          <div class="live-item"><div class="live-label">Temperature (°C)</div><div class="live-value">-20.5</div></div>
-          <div class="live-item"><div class="live-label">Humidity (%)</div><div class="live-value">15.0</div></div>
-          <div class="live-item"><div class="live-label">Next Iridium transmit in (s)</div><div class="live-value">120</div></div>
-          <div class="live-item"><div class="live-label">Last cut reason</div><div class="live-value">none / bucket_logic / external / iridium</div></div>
-        </div>
       </section>
 
       <!-- DEVICE / WIFI -->
@@ -1320,8 +1307,8 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
 
         <div class="field-inline">
           <!-- These are separate POST targets; firmware will implement handlers -->
-          <button type="submit" class="btn" formaction="/lock" formmethod="POST">Lock</button>
-          <button type="submit" class="btn btn-danger" formaction="/release" formmethod="POST">Release</button>
+          <button type="button" class="btn" onclick="postAction('/lock')">Lock</button>
+          <button type="button" class="btn btn-danger" onclick="postAction('/release')">Release</button>
         </div>
       </section>
 
@@ -1336,9 +1323,22 @@ static const char SETTINGS_PAGE_HTML[] PROGMEM = R"rawliteral(
   </form>
 </div>
 
+<!-- Prefill current settings from the device (served as JS to avoid large heap allocations) -->
+<script src="/prefill.js"></script>
+
 <script>
 (function(){
   function $(id){ return document.getElementById(id); }
+  window.postAction = async function(path){
+    try{
+      const r = await fetch(path, { method: 'POST', cache: 'no-store' });
+      if(!r.ok){
+        console.warn('Action failed:', path, r.status);
+      }
+    }catch(e){
+      console.warn('Action error:', path, e);
+    }
+  }
   function setText(id, v){
     var el = $(id);
     if (!el) return;
