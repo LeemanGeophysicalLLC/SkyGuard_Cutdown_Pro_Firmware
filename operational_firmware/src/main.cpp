@@ -148,9 +148,6 @@ void setup() {
     delay(50);
 
     debugPrintln("SkyGuard Cutdown Pro Debug Stream");
-    debugPrintln("Boot supercap charge phase...");
-    statusLedShowBootChargeBreathe(BOOT_SUPERCAP_CHARGE_MS);
-    statusLedShowBootInProgress();
 
     // Load settings (or defaults).
     settingsInit();
@@ -167,6 +164,27 @@ void setup() {
 
     // Init readings by starting up sensors
     readingsInit();
+
+    const bool skip_boot_charge = webconfigConsumeSkipBootChargeOnce();
+    if (!skip_boot_charge) {
+        debugPrintln("Boot supercap charge phase...");
+        const uint32_t charge_start_ms = millis();
+        while ((millis() - charge_start_ms) < BOOT_SUPERCAP_CHARGE_MS) {
+            const uint32_t elapsed_ms = millis() - charge_start_ms;
+            statusLedShowBootChargeFrame(elapsed_ms);
+
+            if (webconfigPollButton()) {
+                return;
+            }
+
+            readingsDrainGPS();
+            delay(25);
+        }
+    } else {
+        debugPrintln("Skipping boot supercap charge phase after config restart");
+    }
+
+    statusLedShowBootInProgress();
 
     // Iridium Modem
     iridiumInit();

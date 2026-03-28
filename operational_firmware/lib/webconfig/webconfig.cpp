@@ -45,6 +45,7 @@
 #include "status_led.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
@@ -145,6 +146,8 @@ static void updateDebouncedButton(DebouncedButton& btn,
 
 static DebouncedButton g_cfg_btn;
 static uint32_t g_press_start_ms = 0;
+static constexpr const char* WEB_BOOT_NAMESPACE = "sgcp_boot";
+static constexpr const char* WEB_BOOT_SKIP_KEY = "skipcharge";
 
 // -------------------------
 // Internal helpers: strings & parsing
@@ -813,6 +816,19 @@ static bool g_saved_ok = false;
 static bool g_exit_requested = false;
 static bool g_defaults_requested = false;
 
+static void setSkipBootChargeFlag(bool value) {
+    Preferences prefs;
+    if (!prefs.begin(WEB_BOOT_NAMESPACE, false)) {
+        return;
+    }
+    prefs.putBool(WEB_BOOT_SKIP_KEY, value);
+    prefs.end();
+}
+
+static void markSkipBootChargeOnce() {
+    setSkipBootChargeFlag(true);
+}
+
 /**
  * @brief Parse one condition row from POST fields into a Condition.
  *
@@ -1096,6 +1112,7 @@ static void setupFirmwareRoutes(WebServer& server) {
                 return;
             }
             server.send(200, "text/plain", "Update OK. Restarting...");
+            markSkipBootChargeOnce();
             delay(250);
             ESP.restart();
         },
@@ -1146,6 +1163,19 @@ WebConfigOptions webconfigGetDefaultOptions() {
 
 void webconfigSetOptions(const WebConfigOptions& opts) {
     g_webcfg_opts = opts;
+}
+
+bool webconfigConsumeSkipBootChargeOnce() {
+    Preferences prefs;
+    if (!prefs.begin(WEB_BOOT_NAMESPACE, false)) {
+        return false;
+    }
+
+    const bool skip = prefs.getBool(WEB_BOOT_SKIP_KEY, false);
+    prefs.putBool(WEB_BOOT_SKIP_KEY, false);
+    prefs.end();
+
+    return skip;
 }
 
 void webconfigFormatSsid(char* out, size_t out_len) {
@@ -1307,6 +1337,7 @@ void webconfigEnter() {
 
         // Save succeeded
         if (g_saved_ok) {
+            markSkipBootChargeOnce();
             delay(250);
             server.stop();
             WiFi.softAPdisconnect(true);
@@ -1317,6 +1348,7 @@ void webconfigEnter() {
 
         // Exit requested
         if (g_exit_requested) {
+            markSkipBootChargeOnce();
             delay(250);
             server.stop();
             WiFi.softAPdisconnect(true);
@@ -1329,6 +1361,7 @@ void webconfigEnter() {
         if (g_defaults_requested) {
             // Restore defaults (serial preserved in settings module), then restart.
             (void)settingsResetToDefaultsAndSave();
+            markSkipBootChargeOnce();
             delay(250);
             server.stop();
             WiFi.softAPdisconnect(true);
@@ -1340,6 +1373,7 @@ void webconfigEnter() {
         // Timeout restart (no save)
         const uint32_t elapsed = millis() - start_ms;
         if (elapsed >= g_webcfg_opts.config_timeout_ms) {
+            markSkipBootChargeOnce();
             server.stop();
             WiFi.softAPdisconnect(true);
             g_server = nullptr;

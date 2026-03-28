@@ -146,11 +146,19 @@ static uint8_t extPinForIndex(uint8_t idx) {
 }
 
 /**
- * @brief Convert pin level to "active" based on polarity.
+ * @brief Convert raw GPIO level to external-input "active" based on polarity.
+ *
+ * The external inputs are optoisolated and pulled up on the MCU side, so the
+ * ESP32 pin level is inverted relative to the external signal:
+ *  - no signal -> GPIO reads HIGH
+ *  - asserted signal -> GPIO reads LOW
+ *
+ * active_high therefore refers to the external signal semantics, not the raw
+ * MCU pin level.
  */
 static bool levelToActive(int pin_level, bool active_high) {
-    if (active_high) return (pin_level == HIGH);
-    return (pin_level == LOW);
+    if (active_high) return (pin_level == LOW);
+    return (pin_level == HIGH);
 }
 
 /**

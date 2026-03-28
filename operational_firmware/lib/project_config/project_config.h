@@ -148,7 +148,7 @@ static constexpr uint8_t LAUNCH_PERSIST_REQUIRED_S = 5;
 static constexpr uint32_t SERVO_MOVE_HOLD_MS = 1500;
 
 /// How long to spend charging the supercap before the boot wiggle (ms).
-static constexpr uint32_t BOOT_SUPERCAP_CHARGE_MS = 20000;
+static constexpr uint32_t BOOT_SUPERCAP_CHARGE_MS = 60000;
 
 // -------------------------
 // SD logging

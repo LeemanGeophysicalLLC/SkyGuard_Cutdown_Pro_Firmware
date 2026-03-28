@@ -60,28 +60,32 @@ void statusLedShowBootInProgress() {
     setPixel(255, 160, 0);
 }
 
+void statusLedShowBootChargeFrame(uint32_t elapsed_ms) {
+    const uint16_t phase_ms = (uint16_t)(elapsed_ms % BOOT_BREATHE_CYCLE_MS);
+
+    uint16_t ramp = phase_ms;
+    if (ramp >= (BOOT_BREATHE_CYCLE_MS / 2)) {
+        ramp = (uint16_t)(BOOT_BREATHE_CYCLE_MS - ramp);
+    }
+
+    const uint16_t max_r = 255;
+    const uint16_t max_g = 160;
+    const uint16_t min_r = 8;
+    const uint16_t min_g = 5;
+    const uint16_t half_cycle = BOOT_BREATHE_CYCLE_MS / 2;
+
+    const uint8_t r = (uint8_t)(min_r + ((max_r - min_r) * ramp) / half_cycle);
+    const uint8_t g = (uint8_t)(min_g + ((max_g - min_g) * ramp) / half_cycle);
+
+    setPixel(r, g, 0);
+}
+
 void statusLedShowBootChargeBreathe(uint32_t duration_ms) {
     const uint32_t start_ms = millis();
 
     while ((millis() - start_ms) < duration_ms) {
         const uint32_t elapsed_ms = millis() - start_ms;
-        const uint16_t phase_ms = (uint16_t)(elapsed_ms % BOOT_BREATHE_CYCLE_MS);
-
-        uint16_t ramp = phase_ms;
-        if (ramp >= (BOOT_BREATHE_CYCLE_MS / 2)) {
-            ramp = (uint16_t)(BOOT_BREATHE_CYCLE_MS - ramp);
-        }
-
-        const uint16_t max_r = 255;
-        const uint16_t max_g = 160;
-        const uint16_t min_r = 8;
-        const uint16_t min_g = 5;
-        const uint16_t half_cycle = BOOT_BREATHE_CYCLE_MS / 2;
-
-        const uint8_t r = (uint8_t)(min_r + ((max_r - min_r) * ramp) / half_cycle);
-        const uint8_t g = (uint8_t)(min_g + ((max_g - min_g) * ramp) / half_cycle);
-
-        setPixel(r, g, 0);
+        statusLedShowBootChargeFrame(elapsed_ms);
         delay(BOOT_BREATHE_STEP_MS);
     }
 

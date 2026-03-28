@@ -150,3 +150,11 @@ void webconfigFormatSsid(char* out, size_t out_len);
  * @param out_result Validation result with summary.
  */
 void webconfigValidateCandidate(const struct SystemConfig& candidate, WebConfigValidationResult& out_result);
+
+/**
+ * @brief Return and clear the one-shot flag that skips the next boot charge wait.
+ *
+ * Used when the device exits config mode and immediately restarts: the supercap
+ * is already charged, so the next boot can skip the long charge delay.
+ */
+bool webconfigConsumeSkipBootChargeOnce();
