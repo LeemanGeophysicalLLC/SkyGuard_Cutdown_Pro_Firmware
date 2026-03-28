@@ -14,7 +14,8 @@
 #include "state.h"
 #include "sd_log.h"
 #include "readings.h"
-#include "cut_logic.h"  
+#include "cut_logic.h"
+#include "status_led.h"
 
 
 static HardwareSerial& SAT = Serial1;
@@ -22,10 +23,12 @@ static IridiumSBD modem(SAT);
 
 static bool s_remote_cut_latched = false;
 static bool s_modem_ready = false;
+static bool s_modem_powered = false;
 static bool s_cancel_deadline_active = false;
 static uint32_t s_cancel_deadline_ms = 0;
 
 static uint32_t s_last_tx_ms = 0;
+static uint32_t s_last_begin_attempt_ms = 0;
 static uint8_t  s_fail_count = 0;
 
 static volatile bool s_iridium_busy = false;
@@ -33,6 +36,92 @@ static bool s_isbd_console_line_open = false;
 static bool s_isbd_diag_line_open = false;
 
 bool iridiumIsBusy() { return s_iridium_busy; }
+
+static void debugPrintSessionStatus1Hz() {
+    if (!DEBUG_SERIAL) return;
+
+    Serial.print("[IR-LOOP] t=");
+    Serial.print(g_state.t_power_s);
+    Serial.print("s ");
+
+    Serial.print("mode=");
+    Serial.print((g_state.system_mode == MODE_CONFIG) ? "CFG" : "NORM");
+    Serial.print(" ");
+
+    Serial.print("flight=");
+    switch (g_state.flight_state) {
+        case FLIGHT_GROUND:     Serial.print("GND"); break;
+        case FLIGHT_IN_FLIGHT:  Serial.print("FLT"); break;
+        case FLIGHT_TERMINATED: Serial.print("TERM"); break;
+        default:                Serial.print("?"); break;
+    }
+    Serial.print(" ");
+
+    Serial.print("launch=");
+    Serial.print(g_state.launch_detected ? "Y" : "N");
+    Serial.print(" ");
+
+    Serial.print("cut=");
+    Serial.print(g_state.cut_fired ? "Y" : "N");
+    if (g_state.cut_fired) {
+        Serial.print(" reason=");
+        Serial.print((int)g_state.cut_reason);
+    }
+
+    Serial.print(" ext=[");
+    for (uint8_t i = 0; i < NUM_EXTERNAL_INPUTS; i++) {
+        Serial.print(g_readings.ext[i].debounced_active ? "1" : "0");
+        if (i + 1 < NUM_EXTERNAL_INPUTS) Serial.print(",");
+    }
+    Serial.print("]");
+
+    Serial.print(" env=");
+    if (g_readings.temp_valid) {
+        Serial.print("T=");
+        Serial.print(g_readings.temp_c, 2);
+        Serial.print("C");
+    } else {
+        Serial.print("T=NA");
+    }
+    Serial.print(" ");
+    if (g_readings.pressure_valid) {
+        Serial.print("P=");
+        Serial.print(g_readings.pressure_hpa, 2);
+        Serial.print("hPa");
+    } else {
+        Serial.print("P=NA");
+    }
+    Serial.print(" ");
+    if (g_readings.humidity_valid) {
+        Serial.print("RH=");
+        Serial.print(g_readings.humidity_pct, 1);
+        Serial.print("%");
+    } else {
+        Serial.print("RH=NA");
+    }
+
+    Serial.print(" gps=");
+    if (g_readings.gps_lat_valid) {
+        Serial.print(g_readings.gps_lat_deg, 6);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print(",");
+    if (g_readings.gps_lon_valid) {
+        Serial.print(g_readings.gps_lon_deg, 6);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print(",");
+    if (g_readings.gps_alt_valid) {
+        Serial.print(g_readings.gps_alt_m, 1);
+    } else {
+        Serial.print("NA");
+    }
+    Serial.print("m");
+
+    Serial.println();
+}
 
 static void configureModemInstance() {
     modem.adjustATTimeout(IRIDIUM_BOOT_AT_TIMEOUT_S);
@@ -65,6 +154,9 @@ void iridiumServiceDuringSession() __attribute__((weak));
 void iridiumServiceDuringSession() {
     const uint32_t now_ms = millis();
 
+    // Keep LED activity alive while the modem session blocks the normal main loop.
+    statusLedUpdateFast(now_ms);
+
     // Always keep UART drained (cheap, prevents overflow)
     readingsDrainGPS();
 
@@ -82,6 +174,14 @@ void iridiumServiceDuringSession() {
 
     // Keep 1 Hz logging cadence (queues during Iridium busy)
     sdLogUpdate1Hz(now_ms);
+
+    // Refresh the 1 Hz LED state after updating readings/cut logic/state.
+    statusLedUpdate1Hz(now_ms);
+    statusLedUpdateFast(now_ms);
+
+    // Show that the safety loop is still alive while a modem session blocks
+    // the normal top-level loop path.
+    debugPrintSessionStatus1Hz();
 }
 
 
@@ -131,14 +231,18 @@ void ISBDDiagsCallback(IridiumSBD* device, char c) {
 }
 
 static void satPowerOn() {
+    if (s_modem_powered) return;
     // Modem ON is high-impedance on the control pin. The modem pulls it high internally.
     pinMode(PIN_SAT_POWER, INPUT);
+    s_modem_powered = true;
 }
 
 static void satPowerOff() {
+    if (!s_modem_powered) return;
     // Modem OFF is an asserted low on the control pin.
     pinMode(PIN_SAT_POWER, OUTPUT);
     digitalWrite(PIN_SAT_POWER, LOW);
+    s_modem_powered = false;
     resetModemInstance();
 }
 
@@ -234,6 +338,7 @@ static bool ensureModemReady(uint32_t begin_timeout_ms) {
 
     satPowerOn();
     delay(250);
+    s_last_begin_attempt_ms = millis();
 
     SAT.begin(IRIDIUM_SERIAL_BAUD, SERIAL_8N1, PIN_SAT_RX, PIN_SAT_TX);
     configureModemInstance();
@@ -434,42 +539,37 @@ static bool doTelemetrySendAndReceive() {
     Serial.println(csq);
 
     // If user disables TX in this phase by setting interval 0, caller won’t call us.
-    // Build a compact CSV-ish payload:
-    // T,<serial>,<t_power_s>,<flight>,<lat>,<lon>,<alt>,<temp>,<p>,<rh>,<cut>,<reason>
+    // Build a compact CSV payload kept under the RockBLOCK credit step threshold:
+    // T,<t_power_s>,<flight>,<lat4>,<lon4>,<alt_m>,<temp_c>,<p_hpa>,<cut_reason>
     char msg[160];
     msg[0] = '\0';
 
-    const uint32_t serial = g_settings.device.serial_number;
+    const bool lat_valid = g_readings.gps_lat_valid;
+    const bool lon_valid = g_readings.gps_lon_valid;
+    const bool alt_valid = g_readings.gps_alt_valid;
+    const bool temp_valid = g_readings.temp_valid;
+    const bool pres_valid = g_readings.pressure_valid;
 
-    snprintf(msg, sizeof(msg), "T,%lu,%lu,%u",
-             (unsigned long)serial,
+    const long alt_m = alt_valid ? lroundf(g_readings.gps_alt_m) : 0L;
+    const long temp_c = temp_valid ? lroundf(g_readings.temp_c) : 0L;
+    const long pres_hpa = pres_valid ? lroundf(g_readings.pressure_hpa) : 0L;
+
+    char lat_buf[20];
+    char lon_buf[20];
+    if (lat_valid) snprintf(lat_buf, sizeof(lat_buf), "%.4f", (double)g_readings.gps_lat_deg);
+    else           snprintf(lat_buf, sizeof(lat_buf), "NA");
+    if (lon_valid) snprintf(lon_buf, sizeof(lon_buf), "%.4f", (double)g_readings.gps_lon_deg);
+    else           snprintf(lon_buf, sizeof(lon_buf), "NA");
+
+    snprintf(msg, sizeof(msg), "T,%lu,%u,%s,%s,%ld,%ld,%ld,%u",
              (unsigned long)g_state.t_power_s,
-             (unsigned)g_state.flight_state);
-
-    // GPS (use NAN when invalid so helper outputs NA)
-    const float lat = g_readings.gps_lat_valid ? g_readings.gps_lat_deg : NAN;
-    const float lon = g_readings.gps_lon_valid ? g_readings.gps_lon_deg : NAN;
-    const float alt = g_readings.gps_alt_valid ? g_readings.gps_alt_m : NAN;
-
-    const float temp = g_readings.temp_valid ? g_readings.temp_c : NAN;
-    const float pres = g_readings.pressure_valid ? g_readings.pressure_hpa : NAN;
-    const float rh   = g_readings.humidity_valid ? g_readings.humidity_pct : NAN;
-
-    appendFloat(msg, sizeof(msg), ",%.6f", lat);
-    appendFloat(msg, sizeof(msg), ",%.6f", lon);
-    appendFloat(msg, sizeof(msg), ",%.1f",  alt);
-    appendFloat(msg, sizeof(msg), ",%.2f",  temp);
-    appendFloat(msg, sizeof(msg), ",%.2f",  pres);
-    appendFloat(msg, sizeof(msg), ",%.2f",  rh);
-
-    // cut + reason
-    {
-        char tmp[32];
-        snprintf(tmp, sizeof(tmp), ",%u,%u",
-                 (unsigned)(g_state.cut_fired ? 1 : 0),
-                 (unsigned)g_state.cut_reason);
-        strncat(msg, tmp, sizeof(msg) - strlen(msg) - 1);
-    }
+             (unsigned)g_state.flight_state,
+             lat_buf,
+             lon_buf,
+             alt_m,
+             temp_c,
+             pres_hpa,
+             (unsigned)g_state.cut_reason);
 
     // Use send+receive every time to avoid extra mailbox sessions.
     // Rx buffer sized to max SBD MT payload (270 bytes).
@@ -502,8 +602,12 @@ static bool doTelemetrySendAndReceive() {
         debugPrint(" name=");
         Serial.println(iridiumErrName(err));
         modem.adjustATTimeout(IRIDIUM_BOOT_AT_TIMEOUT_S);
-        markModemNotReady();
-        satPowerOff();
+        if (err == ISBD_IS_ASLEEP ||
+            err == ISBD_SERIAL_FAILURE ||
+            err == ISBD_NO_MODEM_DETECTED ||
+            err == ISBD_PROTOCOL_ERROR) {
+            markModemNotReady();
+        }
         return false;
     }
 
@@ -519,27 +623,29 @@ static bool doTelemetrySendAndReceive() {
 void iridiumInit() {
     s_remote_cut_latched = false;
     s_modem_ready = false;
+    s_modem_powered = false;
     s_last_tx_ms = 0;
+    s_last_begin_attempt_ms = 0;
     s_fail_count = 0;
     clearCancelDeadline();
     resetModemInstance();
 
-    // If disabled, keep modem off and clear error.
+    // Boot must stay fast and recoverable. Actual modem wake/begin is handled
+    // by iridiumUpdate1Hz based on the next scheduled transmit time.
     if (!g_settings.iridium.enabled) {
         satPowerOff();
         errorClear(ERR_IRIDIUM);
         return;
     }
 
-    if (ensureModemReady(IRIDIUM_BEGIN_TIMEOUT_MS)) {
-        s_fail_count = 0;
-        errorClear(ERR_IRIDIUM);
-        return;
+    const uint32_t tx_interval_s = currentTxIntervalS();
+    if (tx_interval_s > 0 && tx_interval_s <= IRIDIUM_BOOT_PREPOWER_WINDOW_S) {
+        debugPrintln("[INFO] Iridium pre-powering modem after setup");
+        satPowerOn();
+    } else {
+        satPowerOff();
     }
-
-    // Boot must remain recoverable. A failed begin is a trouble condition, not a startup lock.
-    s_fail_count = IRIDIUM_FAILS_BEFORE_ERROR;
-    errorSet(ERR_IRIDIUM);
+    errorClear(ERR_IRIDIUM);
 }
 
 bool iridiumGetRemoteCutRequestAndClear() {
@@ -560,25 +666,62 @@ void iridiumUpdate1Hz(uint32_t now_ms) {
     // Guard: never start an Iridium session while in config mode
     // (keeps AP/web UI responsive; avoids long blocking calls on the ground).
     if (g_state.system_mode == MODE_CONFIG) {
+        satPowerOff();
+        markModemNotReady();
         return;
     }
 
-    // ---- Telemetry TX scheduling ----
     const uint32_t tx_interval_s = currentTxIntervalS();
-    if (tx_interval_s > 0) {
-        const uint32_t tx_interval_ms = tx_interval_s * 1000UL;
-        if (s_last_tx_ms == 0 || (uint32_t)(now_ms - s_last_tx_ms) >= tx_interval_ms) {
-            s_last_tx_ms = now_ms;
+    if (tx_interval_s == 0) {
+        satPowerOff();
+        markModemNotReady();
+        errorClear(ERR_IRIDIUM);
+        return;
+    }
 
-            const bool ok = doTelemetrySendAndReceive();
-            if (ok) {
+    const uint32_t tx_interval_ms = tx_interval_s * 1000UL;
+    const uint32_t next_due_ms = (s_last_tx_ms == 0) ? now_ms : (s_last_tx_ms + tx_interval_ms);
+    const bool due_now = (s_last_tx_ms == 0) || ((int32_t)(now_ms - next_due_ms) >= 0);
+    const uint32_t time_until_due_ms = due_now ? 0 : (next_due_ms - now_ms);
+    const uint32_t keep_awake_ms = IRIDIUM_KEEP_AWAKE_WINDOW_S * 1000UL;
+    const uint32_t prewake_ms = IRIDIUM_PREWAKE_WINDOW_S * 1000UL;
+
+    if (time_until_due_ms > keep_awake_ms) {
+        satPowerOff();
+        markModemNotReady();
+        return;
+    }
+
+    const bool in_prewake_window = (time_until_due_ms <= prewake_ms);
+    if (in_prewake_window) {
+        satPowerOn();
+    }
+
+    if (in_prewake_window && !s_modem_ready) {
+        const bool retry_due = (s_last_begin_attempt_ms == 0) ||
+                               ((uint32_t)(now_ms - s_last_begin_attempt_ms) >= (IRIDIUM_BEGIN_RETRY_INTERVAL_S * 1000UL));
+        if (retry_due) {
+            if (ensureModemReady(IRIDIUM_BEGIN_TIMEOUT_MS)) {
                 s_fail_count = 0;
                 errorClear(ERR_IRIDIUM);
             } else {
                 if (s_fail_count < 255) s_fail_count++;
                 if (s_fail_count >= IRIDIUM_FAILS_BEFORE_ERROR) errorSet(ERR_IRIDIUM);
-                debugPrintln("[WARN] Iridium telemetry send/receive failed");
             }
+        }
+    }
+
+    if (due_now) {
+        s_last_tx_ms = now_ms;
+
+        const bool ok = doTelemetrySendAndReceive();
+        if (ok) {
+            s_fail_count = 0;
+            errorClear(ERR_IRIDIUM);
+        } else {
+            if (s_fail_count < 255) s_fail_count++;
+            if (s_fail_count >= IRIDIUM_FAILS_BEFORE_ERROR) errorSet(ERR_IRIDIUM);
+            debugPrintln("[WARN] Iridium telemetry send/receive failed");
         }
     }
 }

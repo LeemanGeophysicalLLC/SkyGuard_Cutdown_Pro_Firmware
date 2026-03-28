@@ -174,6 +174,10 @@ static constexpr uint16_t IRIDIUM_BOOT_AT_TIMEOUT_S = 3;
 static constexpr uint16_t IRIDIUM_SESSION_AT_TIMEOUT_S = 90;
 static constexpr uint32_t IRIDIUM_BEGIN_TIMEOUT_MS = 180000;
 static constexpr uint32_t IRIDIUM_PROBE_TIMEOUT_MS = 1500;
+static constexpr uint32_t IRIDIUM_BOOT_PREPOWER_WINDOW_S = 300;
+static constexpr uint32_t IRIDIUM_KEEP_AWAKE_WINDOW_S = 600;
+static constexpr uint32_t IRIDIUM_PREWAKE_WINDOW_S = 180;
+static constexpr uint32_t IRIDIUM_BEGIN_RETRY_INTERVAL_S = 60;
 
 // If PIN_SAT_POWER enables power to modem:
 static constexpr bool SAT_POWER_ACTIVE_HIGH = true;
