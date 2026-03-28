@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <IridiumSBD.h>
+#include <new>
 #include <string.h>
 
 #include "pins.h"
@@ -28,8 +29,20 @@ static uint32_t s_last_tx_ms = 0;
 static uint8_t  s_fail_count = 0;
 
 static volatile bool s_iridium_busy = false;
+static bool s_isbd_console_line_open = false;
+static bool s_isbd_diag_line_open = false;
 
 bool iridiumIsBusy() { return s_iridium_busy; }
+
+static void configureModemInstance() {
+    modem.adjustATTimeout(IRIDIUM_BOOT_AT_TIMEOUT_S);
+    modem.setPowerProfile(IridiumSBD::DEFAULT_POWER_PROFILE);
+}
+
+static void resetModemInstance() {
+    new (&modem) IridiumSBD(SAT);
+    configureModemInstance();
+}
 
 static void clearCancelDeadline() {
     s_cancel_deadline_active = false;
@@ -79,20 +92,141 @@ bool ISBDCallback() {
     return !cancelDeadlineExpired(); // true = continue, false = cancel
 }
 
+void ISBDConsoleCallback(IridiumSBD* device, char c) {
+    (void)device;
+    if (!DEBUG_SERIAL) return;
+
+    if (!s_isbd_console_line_open) {
+        Serial.print("[ISBD-CON] ");
+        s_isbd_console_line_open = true;
+    }
+
+    if (c == '\r') return;
+    if (c == '\n') {
+        Serial.println();
+        s_isbd_console_line_open = false;
+        return;
+    }
+
+    Serial.print(c);
+}
+
+void ISBDDiagsCallback(IridiumSBD* device, char c) {
+    (void)device;
+    if (!DEBUG_SERIAL) return;
+
+    if (!s_isbd_diag_line_open) {
+        Serial.print("[ISBD-DIAG] ");
+        s_isbd_diag_line_open = true;
+    }
+
+    if (c == '\r') return;
+    if (c == '\n') {
+        Serial.println();
+        s_isbd_diag_line_open = false;
+        return;
+    }
+
+    Serial.print(c);
+}
+
 static void satPowerOn() {
-    pinMode(PIN_SAT_POWER, OUTPUT);
-    if (SAT_POWER_ACTIVE_HIGH) digitalWrite(PIN_SAT_POWER, HIGH);
-    else                       digitalWrite(PIN_SAT_POWER, LOW);
+    // Modem ON is high-impedance on the control pin. The modem pulls it high internally.
+    pinMode(PIN_SAT_POWER, INPUT);
 }
 
 static void satPowerOff() {
+    // Modem OFF is an asserted low on the control pin.
     pinMode(PIN_SAT_POWER, OUTPUT);
-    if (SAT_POWER_ACTIVE_HIGH) digitalWrite(PIN_SAT_POWER, LOW);
-    else                       digitalWrite(PIN_SAT_POWER, HIGH);
+    digitalWrite(PIN_SAT_POWER, LOW);
+    resetModemInstance();
 }
 
 static void markModemNotReady() {
     s_modem_ready = false;
+}
+
+static int readSatAvalRaw() {
+    pinMode(PIN_SAT_AVAL, INPUT);
+    return digitalRead(PIN_SAT_AVAL);
+}
+
+static void satUartDrain() {
+    while (SAT.available() > 0) {
+        (void)SAT.read();
+    }
+}
+
+static bool satWaitForSubstring(const char* needle, uint32_t timeout_ms) {
+    if (!needle || !needle[0]) return false;
+
+    const size_t needle_len = strlen(needle);
+    char window[48];
+    memset(window, 0, sizeof(window));
+    size_t used = 0;
+
+    const uint32_t start_ms = millis();
+    while ((uint32_t)(millis() - start_ms) < timeout_ms) {
+        while (SAT.available() > 0) {
+            const char c = (char)SAT.read();
+
+            if (used + 1 < sizeof(window)) {
+                window[used++] = c;
+                window[used] = '\0';
+            } else {
+                memmove(window, window + 1, sizeof(window) - 2);
+                window[sizeof(window) - 2] = c;
+                window[sizeof(window) - 1] = '\0';
+            }
+
+            if (strstr(window, needle) != nullptr) {
+                return true;
+            }
+        }
+
+        delay(5);
+    }
+
+    return false;
+}
+
+static bool modemRespondsToAT() {
+    satUartDrain();
+    SAT.print("AT\r");
+    return satWaitForSubstring("OK\r\n", IRIDIUM_PROBE_TIMEOUT_MS);
+}
+
+static void logRawSatResponse(const char* label, uint32_t timeout_ms) {
+    char buf[128];
+    size_t used = 0;
+    memset(buf, 0, sizeof(buf));
+
+    const uint32_t start_ms = millis();
+    while ((uint32_t)(millis() - start_ms) < timeout_ms) {
+        while (SAT.available() > 0) {
+            const char c = (char)SAT.read();
+            if (used + 1 < sizeof(buf)) {
+                buf[used++] = c;
+                buf[used] = '\0';
+            }
+        }
+        delay(5);
+    }
+
+    debugPrint("[INFO] ");
+    Serial.print(label);
+    debugPrint(" raw=");
+    if (used == 0) {
+        Serial.println("<none>");
+    } else {
+        Serial.println(buf);
+    }
+}
+
+static void rawProbeCommand(const char* label, const char* cmd, uint32_t timeout_ms) {
+    satUartDrain();
+    SAT.print(cmd);
+    logRawSatResponse(label, timeout_ms);
 }
 
 static bool ensureModemReady(uint32_t begin_timeout_ms) {
@@ -102,14 +236,27 @@ static bool ensureModemReady(uint32_t begin_timeout_ms) {
     delay(250);
 
     SAT.begin(IRIDIUM_SERIAL_BAUD, SERIAL_8N1, PIN_SAT_RX, PIN_SAT_TX);
-    modem.adjustATTimeout(IRIDIUM_AT_TIMEOUT_S);
-    modem.setPowerProfile(IridiumSBD::DEFAULT_POWER_PROFILE);
+    configureModemInstance();
+
+    debugPrint("[INFO] Iridium AVAL=");
+    Serial.println(readSatAvalRaw());
+
+    if (!modemRespondsToAT()) {
+        debugPrintln("[WARN] Iridium raw AT probe failed");
+        markModemNotReady();
+        satPowerOff();
+        return false;
+    }
+
+    debugPrintln("[INFO] Iridium raw AT probe OK");
+    rawProbeCommand("Iridium AT+CGMR", "AT+CGMR\r", IRIDIUM_PROBE_TIMEOUT_MS);
+    rawProbeCommand("Iridium AT+CSQ", "AT+CSQ\r", IRIDIUM_PROBE_TIMEOUT_MS);
 
     debugPrintln("[INFO] Iridium modem begin attempt");
     startCancelDeadline(begin_timeout_ms);
     const int err = modem.begin();
     clearCancelDeadline();
-    if (err != ISBD_SUCCESS) {
+    if (err != ISBD_SUCCESS && err != ISBD_ALREADY_AWAKE) {
         markModemNotReady();
         satPowerOff();
         debugPrint("[WARN] Iridium begin failed err=");
@@ -118,7 +265,11 @@ static bool ensureModemReady(uint32_t begin_timeout_ms) {
     }
 
     s_modem_ready = true;
-    debugPrintln("[INFO] Iridium begin OK");
+    if (err == ISBD_ALREADY_AWAKE) {
+        debugPrintln("[INFO] Iridium modem already awake");
+    } else {
+        debugPrintln("[INFO] Iridium begin OK");
+    }
     return true;
 }
 
@@ -245,10 +396,42 @@ static void handleRxMessage(const uint8_t* rx, size_t rxLen) {
     }
 }
 
+static const char* iridiumErrName(int err) {
+    switch (err) {
+        case ISBD_SUCCESS: return "SUCCESS";
+        case ISBD_ALREADY_AWAKE: return "ALREADY_AWAKE";
+        case ISBD_SERIAL_FAILURE: return "SERIAL_FAILURE";
+        case ISBD_PROTOCOL_ERROR: return "PROTOCOL_ERROR";
+        case ISBD_CANCELLED: return "CANCELLED";
+        case ISBD_NO_MODEM_DETECTED: return "NO_MODEM_DETECTED";
+        case ISBD_SBDIX_FATAL_ERROR: return "SBDIX_FATAL_ERROR";
+        case ISBD_SENDRECEIVE_TIMEOUT: return "SENDRECEIVE_TIMEOUT";
+        case ISBD_RX_OVERFLOW: return "RX_OVERFLOW";
+        case ISBD_REENTRANT: return "REENTRANT";
+        case ISBD_IS_ASLEEP: return "IS_ASLEEP";
+        case ISBD_NO_SLEEP_PIN: return "NO_SLEEP_PIN";
+        case ISBD_NO_NETWORK: return "NO_NETWORK";
+        case ISBD_MSG_TOO_LONG: return "MSG_TOO_LONG";
+        default: return "UNKNOWN";
+    }
+}
+
 static bool doTelemetrySendAndReceive() {
     if (!ensureModemReady(IRIDIUM_BEGIN_TIMEOUT_MS)) {
         return false;
     }
+
+    // SBDIX can legitimately take much longer than boot-time AT probes.
+    modem.adjustATTimeout(IRIDIUM_SESSION_AT_TIMEOUT_S);
+
+    int csq = -1;
+    const int csq_err = modem.getSignalQuality(csq);
+    debugPrint("[INFO] Iridium CSQ err=");
+    Serial.print(csq_err);
+    debugPrint(" name=");
+    Serial.print(iridiumErrName(csq_err));
+    debugPrint(" value=");
+    Serial.println(csq);
 
     // If user disables TX in this phase by setting interval 0, caller won’t call us.
     // Build a compact CSV-ish payload:
@@ -297,6 +480,11 @@ static bool doTelemetrySendAndReceive() {
     const uint8_t* tx = (const uint8_t*)msg;
     size_t txLen = strnlen(msg, sizeof(msg));
 
+    debugPrint("[INFO] Iridium TX len=");
+    Serial.print((unsigned)txLen);
+    debugPrint(" payload=");
+    Serial.println(msg);
+
     s_iridium_busy = true;
     int err = modem.sendReceiveSBDBinary(tx, txLen, rx, rxLen);
     s_iridium_busy = false;
@@ -309,10 +497,17 @@ static bool doTelemetrySendAndReceive() {
     // int err = modem.sendReceiveSBDBinary((uint8_t*)tx, txLen, rx, rxLen);
 
     if (err != ISBD_SUCCESS) {
+        debugPrint("[WARN] Iridium sendReceive err=");
+        Serial.print(err);
+        debugPrint(" name=");
+        Serial.println(iridiumErrName(err));
+        modem.adjustATTimeout(IRIDIUM_BOOT_AT_TIMEOUT_S);
         markModemNotReady();
         satPowerOff();
         return false;
     }
+
+    modem.adjustATTimeout(IRIDIUM_BOOT_AT_TIMEOUT_S);
 
     if (rxLen > 0) {
         handleRxMessage(rx, rxLen);
@@ -327,6 +522,7 @@ void iridiumInit() {
     s_last_tx_ms = 0;
     s_fail_count = 0;
     clearCancelDeadline();
+    resetModemInstance();
 
     // If disabled, keep modem off and clear error.
     if (!g_settings.iridium.enabled) {

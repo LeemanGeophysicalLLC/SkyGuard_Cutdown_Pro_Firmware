@@ -6,7 +6,7 @@
 const uint8_t PIN_PROG_CTRL = 0;
 const uint8_t PIN_SERIAL_TX = 1;
 const uint8_t PIN_SERIAL_RX = 2;
-const uint8_t PIN_SAT_POWER = 3;
+const uint8_t PIN_SAT_POWER = 4;
 const uint8_t PIN_SERVO = 13;
 const uint8_t PIN_NEOPIXEL = 14;
 const uint8_t PIN_SD_CD = 15;
